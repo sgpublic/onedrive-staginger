@@ -226,19 +226,52 @@ class MigrationWorker:
             logger.warning("无法读取待校验文件：%s", path)
             return False
         if stat.st_size != item.size:
-            logger.warning("文件大小不匹配：%s", path)
+            logger.warning(
+                "文件大小不匹配：%s，预期 %d 字节，实际 %d 字节",
+                path,
+                item.size,
+                stat.st_size,
+            )
             return False
         remote_mtime_ns = _remote_mtime_ns(item.remote_mtime)
         if remote_mtime_ns is not None and stat.st_mtime_ns == remote_mtime_ns:
-            logger.info("文件大小和修改时间匹配，跳过哈希校验：%s", path)
+            logger.info(
+                "文件大小和修改时间匹配，跳过哈希校验：%s，预期修改时间 %s，实际修改时间 %s",
+                path,
+                _mtime_text(remote_mtime_ns),
+                _mtime_text(stat.st_mtime_ns),
+            )
             return True
-        logger.info("正在计算文件哈希：%s", path)
+        if remote_mtime_ns is None:
+            reason = "远端未提供修改时间" if item.remote_mtime is None else "远端修改时间无法解析"
+            logger.info("%s，正在计算 %s 哈希：%s", reason, item.hash_type, path)
+        else:
+            logger.info(
+                "文件修改时间不匹配，正在计算 %s 哈希：%s，预期修改时间 %s，实际修改时间 %s",
+                item.hash_type,
+                path,
+                _mtime_text(remote_mtime_ns),
+                _mtime_text(stat.st_mtime_ns),
+            )
         if on_verify_start is not None:
             on_verify_start()
         digest = await asyncio.to_thread(file_hash, path, item.hash_type, on_verify_progress)
         if digest != item.hash:
-            logger.warning("文件哈希不匹配：%s", path)
+            logger.warning(
+                "文件哈希不匹配：%s，算法 %s，预期 %s，实际 %s",
+                path,
+                item.hash_type,
+                item.hash,
+                digest,
+            )
             return False
+        logger.info(
+            "文件哈希匹配：%s，算法 %s，预期 %s，实际 %s",
+            path,
+            item.hash_type,
+            item.hash,
+            digest,
+        )
         if remote_mtime_ns is not None:
             await asyncio.to_thread(os.utime, path, ns=(remote_mtime_ns, remote_mtime_ns))
             logger.info("文件哈希校验通过，已修正修改时间：%s", path)
@@ -286,6 +319,10 @@ def _remote_mtime_ns(value: str | None) -> int | None:
         (delta.days * 86_400 + delta.seconds) * 1_000_000_000
         + delta.microseconds * 1_000
     )
+
+
+def _mtime_text(value: int) -> str:
+    return datetime.fromtimestamp(value / 1_000_000_000, UTC).isoformat(timespec="microseconds")
 
 
 def _copy_file(

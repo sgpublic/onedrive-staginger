@@ -153,6 +153,37 @@ class StatelessPipelineTests(unittest.TestCase):
         self.assertTrue(verified)
         self.assertEqual(path.stat().st_mtime_ns, _remote_mtime_ns(remote_mtime))
 
+    def test_verification_logs_expected_and_actual_values(self) -> None:
+        data = b"verified"
+        item = self._hashed_item(data, "2026-08-24T12:00:00Z")
+        path = self.root / "file"
+        path.write_bytes(b"corrupt!")
+        worker = MigrationWorker(MigrationTask(self.root / "temp", self.root / "dist", "/Media"), FakeDownloads())  # type: ignore[arg-type]
+
+        with self.assertLogs("onedrive_staginger.pipeline.migration", level="INFO") as logs:
+            verified = asyncio.run(worker._verify(item, path))
+
+        output = "\n".join(logs.output)
+        self.assertFalse(verified)
+        self.assertIn("文件修改时间不匹配", output)
+        self.assertIn("预期修改时间", output)
+        self.assertIn("实际修改时间", output)
+        self.assertIn("文件哈希不匹配", output)
+        self.assertIn("算法 sha256", output)
+        self.assertIn(item.hash, output)
+
+    def test_size_mismatch_log_includes_expected_and_actual_bytes(self) -> None:
+        item = self._hashed_item(b"verified", "2026-08-24T12:00:00Z")
+        path = self.root / "file"
+        path.write_bytes(b"short")
+        worker = MigrationWorker(MigrationTask(self.root / "temp", self.root / "dist", "/Media"), FakeDownloads())  # type: ignore[arg-type]
+
+        with self.assertLogs("onedrive_staginger.pipeline.migration", level="WARNING") as logs:
+            verified = asyncio.run(worker._verify(item, path))
+
+        self.assertFalse(verified)
+        self.assertIn("预期 8 字节，实际 5 字节", logs.output[0])
+
     def test_fast_verification_does_not_report_progress(self) -> None:
         data = b"verified"
         remote_mtime = "2026-08-24T12:00:00Z"
@@ -261,6 +292,12 @@ class StatelessPipelineTests(unittest.TestCase):
                     progress: list[int] = []
                     file_hash(path, hash_type, progress.append)
                     self.assertEqual(progress, [3, 6, 8])
+
+    def test_quick_xor_hash_matches_onedrive_reference_value(self) -> None:
+        path = self.root / "file"
+        path.write_bytes(b"hello world")
+
+        self.assertEqual(file_hash(path, "quickXorHash"), "aCgDG9jwBhDc4Q1yawMZAAAAAAA=")
 
     def test_invalid_remote_mtime_falls_back_without_crashing(self) -> None:
         self.assertIsNone(_remote_mtime_ns("not-a-time"))
