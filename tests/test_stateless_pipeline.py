@@ -205,6 +205,41 @@ class StatelessPipelineTests(unittest.TestCase):
         self.assertEqual(starts, [])
         self.assertEqual(progress, [])
 
+    def test_successful_verification_logs_do_not_include_expected_or_actual_values(self) -> None:
+        data = b"verified"
+        remote_mtime = "2026-08-24T12:00:00Z"
+        item = self._hashed_item(data, remote_mtime)
+        path = self.root / "file"
+        path.write_bytes(data)
+        mtime_ns = _remote_mtime_ns(remote_mtime)
+        os.utime(path, ns=(mtime_ns, mtime_ns))
+        worker = MigrationWorker(MigrationTask(self.root / "temp", self.root / "dist", "/Media"), FakeDownloads())  # type: ignore[arg-type]
+
+        with self.assertLogs("onedrive_staginger.pipeline.migration", level="INFO") as logs:
+            verified = asyncio.run(worker._verify(item, path))
+
+        output = "\n".join(logs.output)
+        self.assertTrue(verified)
+        self.assertIn("文件大小和修改时间匹配", output)
+        self.assertNotIn("预期", output)
+        self.assertNotIn("实际", output)
+
+    def test_matching_hash_log_does_not_include_expected_or_actual_values(self) -> None:
+        data = b"verified"
+        item = self._hashed_item(data, None)
+        path = self.root / "file"
+        path.write_bytes(data)
+        worker = MigrationWorker(MigrationTask(self.root / "temp", self.root / "dist", "/Media"), FakeDownloads())  # type: ignore[arg-type]
+
+        with self.assertLogs("onedrive_staginger.pipeline.migration", level="INFO") as logs:
+            verified = asyncio.run(worker._verify(item, path))
+
+        output = "\n".join(logs.output)
+        self.assertTrue(verified)
+        self.assertIn("文件哈希匹配", output)
+        self.assertNotIn("预期", output)
+        self.assertNotIn("实际", output)
+
     def test_download_verification_reports_hash_progress(self) -> None:
         data = b"verified download"
         item = self._hashed_item(data, "2026-08-24T12:00:00Z")
@@ -408,7 +443,7 @@ class StatelessPipelineTests(unittest.TestCase):
         self.assertEqual(options["min-split-size"], str(1024 * 1024))
 
     @staticmethod
-    def _hashed_item(data: bytes, remote_mtime: str) -> OneDriveItem:
+    def _hashed_item(data: bytes, remote_mtime: str | None) -> OneDriveItem:
         return OneDriveItem.create(
             drive_item_id=f"item-{OneDriveItem.select().count()}",
             name="01.mkv",
