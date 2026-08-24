@@ -54,9 +54,16 @@ class Transfer:
 class MigrationWorker:
     """Reconcile one manifest file against local staging and final paths."""
 
-    def __init__(self, task: MigrationTask, downloads: Aria2DownloadManager) -> None:
+    def __init__(
+        self,
+        task: MigrationTask,
+        downloads: Aria2DownloadManager,
+        *,
+        fast_verify_after_download: bool = False,
+    ) -> None:
         self._task = task
         self._downloads = downloads
+        self._fast_verify_after_download = fast_verify_after_download
 
     async def reconcile(
         self,
@@ -143,6 +150,11 @@ class MigrationWorker:
     ) -> TransferStatus:
         item = transfer.file.item
         temp_path = self._temp_path(item)
+        if self._fast_verify_after_download and await self._size_matches(item, temp_path):
+            transfer.downloaded_bytes = item.size or 0
+            transfer.status = TransferStatus.STAGED
+            logger.info("下载文件大小校验通过：%s", transfer.file.relative_path)
+            return transfer.status
         if await self._verify(item, temp_path, on_verify_start, on_verify_progress):
             transfer.downloaded_bytes = item.size or 0
             transfer.status = TransferStatus.STAGED
@@ -232,6 +244,14 @@ class MigrationWorker:
         else:
             logger.info("文件哈希校验通过：%s", path)
         return True
+
+    @staticmethod
+    async def _size_matches(item: OneDriveItem, path: Path) -> bool:
+        try:
+            stat = await asyncio.to_thread(path.stat)
+        except OSError:
+            return False
+        return stat.st_size == item.size
 
     @staticmethod
     def _fail(transfer: Transfer, message: str) -> TransferStatus:

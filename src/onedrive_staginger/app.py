@@ -126,7 +126,11 @@ async def download(config_dir: Path, task: MigrationTask) -> None:
                     downloads = Aria2DownloadManager(
                         aria2_client, client, account.drive_id, task, config.scheduler
                     )
-                    worker = MigrationWorker(task, downloads)
+                    worker = MigrationWorker(
+                        task,
+                        downloads,
+                        fast_verify_after_download=config.scheduler.fast_verify_after_download,
+                    )
                     controller = MigrationController(worker, config.scheduler, task, progress)
                     await controller.run()
     finally:

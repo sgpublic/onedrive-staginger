@@ -44,6 +44,7 @@ class AppConfigTests(unittest.TestCase):
         self.assertEqual(config.scheduler.api_requests_per_second, 10)
         self.assertEqual(config.scheduler.min_split_size, 1024 * 1024)
         self.assertEqual(config.scheduler.max_split_size, 4 * 1024 * 1024)
+        self.assertFalse(config.scheduler.fast_verify_after_download)
         with self.assertRaises(FrozenInstanceError):
             config.scheduler.max_downloads = 3  # type: ignore[misc]
 
@@ -63,6 +64,14 @@ class AppConfigTests(unittest.TestCase):
         self.path.write_text(VALID_CONFIG.replace('min_split_size: "1M"', "min_split_size: 4"), encoding="utf-8")
 
         with self.assertRaisesRegex(ConfigError, "min_split_size"):
+            AppConfig.initialize(self.config_dir)
+
+    def test_rejects_non_boolean_fast_verify_after_download(self) -> None:
+        self.path.write_text(
+            VALID_CONFIG + '  fast_verify_after_download: "true"\n', encoding="utf-8"
+        )
+
+        with self.assertRaisesRegex(ConfigError, "fast_verify_after_download"):
             AppConfig.initialize(self.config_dir)
 
     def test_rejects_maximum_smaller_than_minimum_split_size(self) -> None:

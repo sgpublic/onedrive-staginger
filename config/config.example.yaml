@@ -14,3 +14,4 @@ scheduler:
   min_split_size: "1M"
   max_split_size: "4M"
   poll_interval_seconds: 1
+  fast_verify_after_download: false

@@ -191,6 +191,30 @@ class StatelessPipelineTests(unittest.TestCase):
         self.assertEqual(starts, [None])
         self.assertEqual(progress[-1], len(data))
 
+    def test_fast_download_verification_skips_hash_when_size_matches(self) -> None:
+        data = b"verified download"
+        item = self._hashed_item(data, "2026-08-24T12:00:00Z")
+        task = MigrationTask(self.root / "temp", self.root / "dist", "/Media")
+        temp_path = task.temp_path(item.drive_item_id, item.name)
+        temp_path.parent.mkdir(parents=True)
+        temp_path.write_bytes(data)
+        transfer = Transfer(ManifestFile(item, "01.mkv"), status=TransferStatus.DOWNLOADING)
+        starts: list[None] = []
+        progress: list[int] = []
+        worker = MigrationWorker(
+            task, FakeDownloads(), fast_verify_after_download=True  # type: ignore[arg-type]
+        )
+
+        with patch("onedrive_staginger.pipeline.migration.file_hash") as file_hash_mock:
+            status = asyncio.run(
+                worker.check_download(transfer, lambda: starts.append(None), progress.append)
+            )
+
+        self.assertEqual(status, TransferStatus.STAGED)
+        self.assertEqual(starts, [])
+        self.assertEqual(progress, [])
+        file_hash_mock.assert_not_called()
+
     def test_file_hash_reports_each_chunk_for_all_supported_hashes(self) -> None:
         path = self.root / "file"
         path.write_bytes(b"abcdefgh")

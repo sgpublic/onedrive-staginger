@@ -40,6 +40,7 @@ scheduler:
   connections_per_file: 8  # 每个文件的 aria2 连接数
   min_split_size: "1M"     # aria2 分片阈值下限
   max_split_size: "4M"     # 按文件大小计算出的分片阈值上限
+  fast_verify_after_download: false # 新下载文件仅按大小校验，默认仍校验哈希
 ```
 
 `temp` 的容量由使用者自行控制；请根据可用空间设置 `max_downloads`。

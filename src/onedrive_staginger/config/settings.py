@@ -34,6 +34,7 @@ class SchedulerConfig:
     min_split_size: int = 1024 * 1024
     max_split_size: int = 4 * 1024 * 1024
     poll_interval_seconds: int = 5
+    fast_verify_after_download: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -99,6 +100,7 @@ class AppConfig:
                 min_split_size=min_split_size,
                 max_split_size=max_split_size,
                 poll_interval_seconds=_positive_int(scheduler, "poll_interval_seconds"),
+                fast_verify_after_download=_bool(scheduler, "fast_verify_after_download", default=False),
             ),
         )
 
@@ -121,6 +123,13 @@ def _positive_int(value: dict[str, Any], key: str, *, default: int | None = None
     item = value.get(key, default)
     if isinstance(item, bool) or not isinstance(item, int) or item <= 0:
         raise ConfigError(f"Configuration field '{key}' must be a positive integer")
+    return item
+
+
+def _bool(value: dict[str, Any], key: str, *, default: bool) -> bool:
+    item = value.get(key, default)
+    if not isinstance(item, bool):
+        raise ConfigError(f"Configuration field '{key}' must be a boolean")
     return item
 
 
