@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections import deque
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 import logging
 
 from ..config import SchedulerConfig
@@ -46,10 +46,19 @@ class MigrationController:
         logger.info("正在将清单子树读入内存：%s", self._task.remote_root_path)
         transfers = [Transfer(file) for file in self._iter_files()]
         logger.info("清单扫描完成：%d 个文件", len(transfers))
+        total_bytes = sum(transfer.file.item.size or 0 for transfer in transfers)
+        if self._progress is not None:
+            self._progress.start(total_bytes, len(transfers))
         for transfer in transfers:
-            status = await self._worker.reconcile(transfer)
+            on_verify_start, on_verify_progress = self._verification_callbacks(transfer)
+            status = await self._worker.reconcile(transfer, on_verify_start, on_verify_progress)
             if status == TransferStatus.FAILED:
                 self._failures.append(transfer)
+            if self._progress is not None:
+                if status == TransferStatus.COMPLETE:
+                    self._progress.complete_file(transfer.id, transfer.file.item.size or 0)
+                else:
+                    self._progress.finish_verification(transfer.id)
 
         queued = deque(
             transfer
@@ -59,16 +68,14 @@ class MigrationController:
         self._download_ids = {
             transfer.id for transfer in queued if transfer.status == TransferStatus.PENDING
         }
-        total_bytes = sum(
+        download_bytes = sum(
             transfer.file.item.size or 0 for transfer in queued if transfer.id in self._download_ids
         )
         logger.info(
             "已准备 %d 个网络下载任务，共 %d 字节",
             len(self._download_ids),
-            total_bytes,
+            download_bytes,
         )
-        if self._progress is not None:
-            self._progress.start(total_bytes, len(self._download_ids))
 
         while queued or self._slots:
             await self._collect_moves()
@@ -120,8 +127,9 @@ class MigrationController:
         for transfer in list(self._slots.values()):
             if transfer.status != TransferStatus.DOWNLOADING:
                 continue
-            status = await self._worker.poll(transfer)
-            if self._progress is not None:
+            on_verify_start, on_verify_progress = self._verification_callbacks(transfer)
+            status = await self._worker.poll(transfer, on_verify_start, on_verify_progress)
+            if self._progress is not None and transfer.status == TransferStatus.DOWNLOADING:
                 self._progress.update_download(
                     transfer.id,
                     transfer.downloaded_bytes,
@@ -132,6 +140,14 @@ class MigrationController:
                 self._start_moves()
             elif status == TransferStatus.PENDING:
                 await self._worker.submit(transfer)
+                if self._progress is not None:
+                    self._progress.start_slot(
+                        transfer.id,
+                        f"准备传输：{transfer.file.relative_path}",
+                        transfer.file.item.size or 0,
+                        transfer.downloaded_bytes,
+                        counts_download=True,
+                    )
             elif status == TransferStatus.FAILED:
                 self._fail_slot(transfer)
 
@@ -149,7 +165,12 @@ class MigrationController:
                 )
             else:
                 on_progress = None
-            self._moves[asyncio.create_task(self._worker.move(transfer, on_progress))] = transfer
+            on_verify_start, on_verify_progress = self._verification_callbacks(transfer)
+            self._moves[
+                asyncio.create_task(
+                    self._worker.move(transfer, on_progress, on_verify_start, on_verify_progress)
+                )
+            ] = transfer
 
     async def _collect_moves(self) -> None:
         for task in [task for task in self._moves if task.done()]:
@@ -169,13 +190,32 @@ class MigrationController:
     def _complete_slot(self, transfer: Transfer) -> None:
         self._slots.pop(transfer.id)
         if self._progress is not None:
-            self._progress.finish_slot(transfer.id, counts_download=transfer.id in self._download_ids)
+            self._progress.finish_slot(
+                transfer.id, completed=True, total=transfer.file.item.size or 0
+            )
 
     def _fail_slot(self, transfer: Transfer) -> None:
         self._slots.pop(transfer.id, None)
         self._failures.append(transfer)
         if self._progress is not None:
-            self._progress.finish_slot(transfer.id, counts_download=False)
+            self._progress.finish_slot(transfer.id, completed=False, total=0)
+
+    def _verification_callbacks(
+        self, transfer: Transfer
+    ) -> tuple[Callable[[], None] | None, Callable[[int], None] | None]:
+        if self._progress is None:
+            return None, None
+        loop = asyncio.get_running_loop()
+
+        def start() -> None:
+            self._progress.start_verification(
+                transfer.id, transfer.file.relative_path, transfer.file.item.size or 0
+            )
+
+        def update(completed: int) -> None:
+            loop.call_soon_threadsafe(self._progress.update_verification, transfer.id, completed)
+
+        return start, update
 
     def _raise_failures(self) -> None:
         if not self._failures:

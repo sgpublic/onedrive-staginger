@@ -27,6 +27,7 @@ from onedrive_staginger.pipeline import ManifestFile, MigrationController, Migra
 from onedrive_staginger.pipeline.migration import _remote_mtime_ns
 from onedrive_staginger.progress import _byte_text
 from onedrive_staginger.task import MigrationTask
+from onedrive_staginger.utils.hashing import file_hash
 
 
 class FakeDownloads:
@@ -50,6 +51,29 @@ class PendingWorker:
     async def submit(self, transfer: Transfer) -> None:
         self.submitted.append(transfer.file.relative_path)
         transfer.status = TransferStatus.DOWNLOADING
+
+
+class CompletedWorker:
+    async def reconcile(
+        self, transfer: Transfer, *_: object
+    ) -> TransferStatus:
+        transfer.status = TransferStatus.COMPLETE
+        return transfer.status
+
+
+class RecordingProgress:
+    def __init__(self) -> None:
+        self.started: tuple[int, int] | None = None
+        self.completed: list[tuple[str, int]] = []
+
+    def start(self, total_bytes: int, total_files: int) -> None:
+        self.started = total_bytes, total_files
+
+    def complete_file(self, transfer_id: str, total: int) -> None:
+        self.completed.append((transfer_id, total))
+
+    def finish_verification(self, _: str) -> None:
+        pass
 
 
 class StatelessPipelineTests(unittest.TestCase):
@@ -129,6 +153,55 @@ class StatelessPipelineTests(unittest.TestCase):
         self.assertTrue(verified)
         self.assertEqual(path.stat().st_mtime_ns, _remote_mtime_ns(remote_mtime))
 
+    def test_fast_verification_does_not_report_progress(self) -> None:
+        data = b"verified"
+        remote_mtime = "2026-08-24T12:00:00Z"
+        item = self._hashed_item(data, remote_mtime)
+        path = self.root / "file"
+        path.write_bytes(data)
+        mtime_ns = _remote_mtime_ns(remote_mtime)
+        os.utime(path, ns=(mtime_ns, mtime_ns))
+        starts: list[None] = []
+        progress: list[int] = []
+        worker = MigrationWorker(MigrationTask(self.root / "temp", self.root / "dist", "/Media"), FakeDownloads())  # type: ignore[arg-type]
+
+        verified = asyncio.run(worker._verify(item, path, lambda: starts.append(None), progress.append))
+
+        self.assertTrue(verified)
+        self.assertEqual(starts, [])
+        self.assertEqual(progress, [])
+
+    def test_download_verification_reports_hash_progress(self) -> None:
+        data = b"verified download"
+        item = self._hashed_item(data, "2026-08-24T12:00:00Z")
+        task = MigrationTask(self.root / "temp", self.root / "dist", "/Media")
+        temp_path = task.temp_path(item.drive_item_id, item.name)
+        temp_path.parent.mkdir(parents=True)
+        temp_path.write_bytes(data)
+        transfer = Transfer(ManifestFile(item, "01.mkv"), status=TransferStatus.DOWNLOADING)
+        starts: list[None] = []
+        progress: list[int] = []
+        worker = MigrationWorker(task, FakeDownloads())  # type: ignore[arg-type]
+
+        status = asyncio.run(
+            worker.check_download(transfer, lambda: starts.append(None), progress.append)
+        )
+
+        self.assertEqual(status, TransferStatus.STAGED)
+        self.assertEqual(starts, [None])
+        self.assertEqual(progress[-1], len(data))
+
+    def test_file_hash_reports_each_chunk_for_all_supported_hashes(self) -> None:
+        path = self.root / "file"
+        path.write_bytes(b"abcdefgh")
+
+        with patch("onedrive_staginger.utils.hashing.CHUNK_SIZE", 3):
+            for hash_type in ("sha1", "sha256", "quickXorHash"):
+                with self.subTest(hash_type=hash_type):
+                    progress: list[int] = []
+                    file_hash(path, hash_type, progress.append)
+                    self.assertEqual(progress, [3, 6, 8])
+
     def test_invalid_remote_mtime_falls_back_without_crashing(self) -> None:
         self.assertIsNone(_remote_mtime_ns("not-a-time"))
 
@@ -171,6 +244,23 @@ class StatelessPipelineTests(unittest.TestCase):
 
         self.assertEqual(worker.submitted, ["01.mkv"])
         self.assertEqual(queued[0].id, "second")
+
+    def test_controller_counts_previously_completed_files_in_total_progress(self) -> None:
+        task = MigrationTask(self.root / "temp", self.root / "dist", "/Media")
+        progress = RecordingProgress()
+        controller = MigrationController(
+            CompletedWorker(), SchedulerConfig(max_downloads=1), task, progress  # type: ignore[arg-type]
+        )
+        files = [
+            ManifestFile(OneDriveItem.create(drive_item_id="first", name="01.mkv", is_file=True, size=3), "01.mkv"),
+            ManifestFile(OneDriveItem.create(drive_item_id="second", name="02.mkv", is_file=True, size=5), "02.mkv"),
+        ]
+        controller._iter_files = lambda: iter(files)  # type: ignore[method-assign]
+
+        asyncio.run(controller.run())
+
+        self.assertEqual(progress.started, (8, 2))
+        self.assertEqual(progress.completed, [("first", 3), ("second", 5)])
 
     def test_aria2_options_cap_split_size_by_file_size_per_connection(self) -> None:
         task = MigrationTask(self.root / "temp", self.root / "dist", "/Media")

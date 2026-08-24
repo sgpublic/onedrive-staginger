@@ -58,7 +58,12 @@ class MigrationWorker:
         self._task = task
         self._downloads = downloads
 
-    async def reconcile(self, transfer: Transfer) -> TransferStatus:
+    async def reconcile(
+        self,
+        transfer: Transfer,
+        on_verify_start: Callable[[], None] | None = None,
+        on_verify_progress: Callable[[int], None] | None = None,
+    ) -> TransferStatus:
         """Derive transient transfer state entirely from local filesystem artifacts."""
         item = transfer.file.item
         error = _metadata_error(item)
@@ -69,13 +74,13 @@ class MigrationWorker:
         partial_path = self._task.partial_path(final_path)
 
         if final_path.exists():
-            if await self._verify(item, final_path):
+            if await self._verify(item, final_path, on_verify_start, on_verify_progress):
                 transfer.status = TransferStatus.COMPLETE
                 return transfer.status
             await asyncio.to_thread(final_path.unlink)
 
         if partial_path.exists():
-            if await self._verify(item, partial_path):
+            if await self._verify(item, partial_path, on_verify_start, on_verify_progress):
                 await asyncio.to_thread(os.replace, partial_path, final_path)
                 if temp_path.exists():
                     await asyncio.to_thread(temp_path.unlink)
@@ -91,7 +96,7 @@ class MigrationWorker:
             return transfer.status
 
         if temp_path.exists():
-            if await self._verify(item, temp_path):
+            if await self._verify(item, temp_path, on_verify_start, on_verify_progress):
                 transfer.status = TransferStatus.STAGED
                 logger.info("已校验中转文件：%s", transfer.file.relative_path)
                 return transfer.status
@@ -112,7 +117,12 @@ class MigrationWorker:
             )
         transfer.status = TransferStatus.DOWNLOADING
 
-    async def poll(self, transfer: Transfer) -> TransferStatus:
+    async def poll(
+        self,
+        transfer: Transfer,
+        on_verify_start: Callable[[], None] | None = None,
+        on_verify_progress: Callable[[int], None] | None = None,
+    ) -> TransferStatus:
         if transfer.aria2_gid is None:
             return self._fail(transfer, "Download has no aria2 GID")
         progress = await self._downloads.poll(transfer.aria2_gid)
@@ -123,12 +133,17 @@ class MigrationWorker:
         if progress.status in {"error", "removed"}:
             return self._fail(transfer, progress.error or f"aria2 task {progress.status}")
         logger.info("下载完成，正在校验：%s", transfer.file.relative_path)
-        return await self.check_download(transfer)
+        return await self.check_download(transfer, on_verify_start, on_verify_progress)
 
-    async def check_download(self, transfer: Transfer) -> TransferStatus:
+    async def check_download(
+        self,
+        transfer: Transfer,
+        on_verify_start: Callable[[], None] | None = None,
+        on_verify_progress: Callable[[int], None] | None = None,
+    ) -> TransferStatus:
         item = transfer.file.item
         temp_path = self._temp_path(item)
-        if await self._verify(item, temp_path):
+        if await self._verify(item, temp_path, on_verify_start, on_verify_progress):
             transfer.downloaded_bytes = item.size or 0
             transfer.status = TransferStatus.STAGED
             logger.info("下载文件校验通过：%s", transfer.file.relative_path)
@@ -144,14 +159,18 @@ class MigrationWorker:
         return transfer.status
 
     async def move(
-        self, transfer: Transfer, on_progress: Callable[[int, int], None] | None = None
+        self,
+        transfer: Transfer,
+        on_progress: Callable[[int, int], None] | None = None,
+        on_verify_start: Callable[[], None] | None = None,
+        on_verify_progress: Callable[[int], None] | None = None,
     ) -> TransferStatus:
         item = transfer.file.item
         temp_path = self._temp_path(item)
         final_path = self._task.dist_path(transfer.file.relative_path)
         partial_path = self._task.partial_path(final_path)
-        if not await self._verify(item, temp_path):
-            return await self.reconcile(transfer)
+        if not await self._verify(item, temp_path, on_verify_start, on_verify_progress):
+            return await self.reconcile(transfer, on_verify_start, on_verify_progress)
 
         transfer.status = TransferStatus.MOVING
         logger.info("正在搬运到最终目录：%s", transfer.file.relative_path)
@@ -159,7 +178,7 @@ class MigrationWorker:
         if partial_path.exists():
             await asyncio.to_thread(partial_path.unlink)
         await asyncio.to_thread(_copy_file, temp_path, partial_path, on_progress)
-        if not await self._verify(item, partial_path):
+        if not await self._verify(item, partial_path, on_verify_start, on_verify_progress):
             await asyncio.to_thread(partial_path.unlink)
             transfer.status = TransferStatus.STAGED
             logger.warning("搬运后文件校验失败，正在重试搬运：%s", transfer.file.relative_path)
@@ -177,7 +196,13 @@ class MigrationWorker:
             raise ValueError(f"OneDrive item {item.drive_item_id} has no file name")
         return self._task.temp_path(item.drive_item_id, item.name)
 
-    async def _verify(self, item: OneDriveItem, path: Path) -> bool:
+    async def _verify(
+        self,
+        item: OneDriveItem,
+        path: Path,
+        on_verify_start: Callable[[], None] | None = None,
+        on_verify_progress: Callable[[int], None] | None = None,
+    ) -> bool:
         error = _metadata_error(item)
         if error is not None:
             return False
@@ -195,7 +220,9 @@ class MigrationWorker:
             logger.info("文件大小和修改时间匹配，跳过哈希校验：%s", path)
             return True
         logger.info("正在计算文件哈希：%s", path)
-        digest = await asyncio.to_thread(file_hash, path, item.hash_type)
+        if on_verify_start is not None:
+            on_verify_start()
+        digest = await asyncio.to_thread(file_hash, path, item.hash_type, on_verify_progress)
         if digest != item.hash:
             logger.warning("文件哈希不匹配：%s", path)
             return False
