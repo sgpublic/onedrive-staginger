@@ -3,10 +3,13 @@ from __future__ import annotations
 import asyncio
 import base64
 from collections import deque
+from datetime import UTC, datetime
 import hashlib
+import os
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from onedrive_staginger.config import SchedulerConfig
 from onedrive_staginger.aria2 import Aria2DownloadManager
@@ -22,6 +25,7 @@ from onedrive_staginger.database import (
     persist_delta_page,
 )
 from onedrive_staginger.pipeline import ManifestFile, MigrationController, MigrationWorker, Transfer, TransferStatus
+from onedrive_staginger.pipeline.migration import _remote_mtime_ns
 from onedrive_staginger.task import MigrationTask
 
 
@@ -96,6 +100,35 @@ class StatelessPipelineTests(unittest.TestCase):
         self.assertEqual(status, TransferStatus.COMPLETE)
         self.assertEqual(transfer.status, TransferStatus.COMPLETE)
 
+    def test_verification_skips_hash_when_size_and_remote_mtime_match(self) -> None:
+        data = b"verified"
+        remote_mtime = datetime(2026, 8, 24, 12, 0, tzinfo=UTC)
+        item = self._hashed_item(data, remote_mtime)
+        path = self.root / "file"
+        path.write_bytes(data)
+        mtime_ns = _remote_mtime_ns(remote_mtime)
+        os.utime(path, ns=(mtime_ns, mtime_ns))
+        worker = MigrationWorker(MigrationTask(self.root / "temp", self.root / "dist", "/Media"), FakeDownloads())  # type: ignore[arg-type]
+
+        with patch("onedrive_staginger.pipeline.migration.file_hash") as file_hash_mock:
+            verified = asyncio.run(worker._verify(item, path))
+
+        self.assertTrue(verified)
+        file_hash_mock.assert_not_called()
+
+    def test_verification_sets_remote_mtime_only_after_hash_matches(self) -> None:
+        data = b"verified"
+        remote_mtime = datetime(2026, 8, 24, 12, 0, tzinfo=UTC)
+        item = self._hashed_item(data, remote_mtime)
+        path = self.root / "file"
+        path.write_bytes(data)
+        worker = MigrationWorker(MigrationTask(self.root / "temp", self.root / "dist", "/Media"), FakeDownloads())  # type: ignore[arg-type]
+
+        verified = asyncio.run(worker._verify(item, path))
+
+        self.assertTrue(verified)
+        self.assertEqual(path.stat().st_mtime_ns, _remote_mtime_ns(remote_mtime))
+
     def test_controller_streams_selected_subtree_with_relative_paths(self) -> None:
         ensure_root_item("root")
         media = OneDriveItem.create(
@@ -158,6 +191,18 @@ class StatelessPipelineTests(unittest.TestCase):
         options = manager._options(task.temp_path("item", "01.mkv"), 4 * 1024 * 1024)
 
         self.assertEqual(options["min-split-size"], str(1024 * 1024))
+
+    @staticmethod
+    def _hashed_item(data: bytes, remote_mtime: datetime) -> OneDriveItem:
+        return OneDriveItem.create(
+            drive_item_id=f"item-{OneDriveItem.select().count()}",
+            name="01.mkv",
+            is_file=True,
+            size=len(data),
+            hash_type="sha256",
+            hash=base64.b64encode(hashlib.sha256(data).digest()).decode("ascii"),
+            remote_mtime=remote_mtime,
+        )
 
 
 if __name__ == "__main__":

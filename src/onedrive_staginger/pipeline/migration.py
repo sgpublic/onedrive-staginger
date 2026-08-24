@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from enum import StrEnum
 import logging
 import os
@@ -186,8 +187,15 @@ class MigrationWorker:
             return False
         if stat.st_size != item.size:
             return False
+        remote_mtime_ns = _remote_mtime_ns(item.remote_mtime)
+        if remote_mtime_ns is not None and stat.st_mtime_ns == remote_mtime_ns:
+            return True
         digest = await asyncio.to_thread(file_hash, path, item.hash_type)
-        return digest == item.hash
+        if digest != item.hash:
+            return False
+        if remote_mtime_ns is not None:
+            await asyncio.to_thread(os.utime, path, ns=(remote_mtime_ns, remote_mtime_ns))
+        return True
 
     @staticmethod
     def _fail(transfer: Transfer, message: str) -> TransferStatus:
@@ -203,6 +211,20 @@ def _metadata_error(item: OneDriveItem) -> str | None:
     if item.hash_type not in {"sha1", "sha256", "quickXorHash"} or item.hash is None:
         return "OneDrive item has no supported hash metadata"
     return None
+
+
+def _remote_mtime_ns(value: datetime | None) -> int | None:
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=UTC)
+    utc_value = value.astimezone(UTC)
+    epoch = datetime(1970, 1, 1, tzinfo=UTC)
+    delta = utc_value - epoch
+    return (
+        (delta.days * 86_400 + delta.seconds) * 1_000_000_000
+        + delta.microseconds * 1_000
+    )
 
 
 def _copy_file(
