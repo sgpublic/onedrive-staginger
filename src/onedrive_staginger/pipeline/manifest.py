@@ -10,7 +10,6 @@ from ..database import (
     ensure_root_item,
     get_value,
     persist_delta_page,
-    resolve_relative_paths,
     set_manifest_state,
 )
 from ..onedrive import DriveItem, OneDriveClient
@@ -55,12 +54,10 @@ class ManifestPipeline:
                     ManifestState.ENUMERATING if page.next_link else ManifestState.COMPLETE
                 ),
             )
-            resolved_paths = resolve_relative_paths(self._root_drive_item_id)
             logger.info(
-                "Synced manifest page %d: %d item(s), %d path(s) resolved%s",
+                "Synced manifest page %d: %d item(s)%s",
                 page_number,
                 len(page.items),
-                resolved_paths,
                 " (complete)" if page.next_link is None else "",
             )
             if page.next_link is None:

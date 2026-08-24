@@ -3,14 +3,15 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import dataclass
+from enum import StrEnum
 import logging
 import os
-import shutil
-from dataclasses import dataclass
 from pathlib import Path
+import shutil
 
 from ..aria2 import Aria2DownloadManager
-from ..database import OneDriveItem, TransferRecord, TransferStatus
+from ..database import OneDriveItem
 from ..task import MigrationTask
 from ..utils.hashing import file_hash
 
@@ -18,11 +19,27 @@ from ..utils.hashing import file_hash
 logger = logging.getLogger(__name__)
 
 
+class TransferStatus(StrEnum):
+    PENDING = "pending"
+    DOWNLOADING = "downloading"
+    STAGED = "staged"
+    MOVING = "moving"
+    COMPLETE = "complete"
+    FAILED = "failed"
+
+
 @dataclass(frozen=True, slots=True)
-class Verification:
-    size: int
-    mtime_ns: int
-    digest: str
+class ManifestFile:
+    item: OneDriveItem
+    relative_path: str
+
+
+@dataclass(slots=True)
+class Transfer:
+    file: ManifestFile
+    status: TransferStatus = TransferStatus.PENDING
+    aria2_gid: str | None = None
+    last_error: str | None = None
 
 
 class MigrationWorker:
@@ -32,155 +49,132 @@ class MigrationWorker:
         self._task = task
         self._downloads = downloads
 
-    async def reconcile(self, item: OneDriveItem, transfer: TransferRecord) -> TransferStatus:
-        """Reconcile stale persisted state with dist, partial, temp, and aria2 files."""
-        metadata_error = _metadata_error(item)
-        if metadata_error is not None:
-            _set_transfer(item.drive_item_id, TransferStatus.FAILED, last_error=metadata_error)
-            return TransferStatus.FAILED
-        final_path = self._task.download_path(_required(item.relative_path, "relative path"))
-        temp_path = self._task.temp_path(item.drive_item_id, _required(item.name, "file name"))
+    async def reconcile(self, transfer: Transfer) -> TransferStatus:
+        """Derive transient transfer state entirely from local filesystem artifacts."""
+        item = transfer.file.item
+        error = _metadata_error(item)
+        if error is not None:
+            return self._fail(transfer, error)
+        final_path = self._task.dist_path(transfer.file.relative_path)
+        temp_path = self._temp_path(item)
         partial_path = self._task.partial_path(final_path)
 
         if final_path.exists():
-            verification = await self._verify(item, transfer, final_path)
-            if verification is not None:
-                _set_transfer(item.drive_item_id, TransferStatus.COMPLETE, verification=verification)
-                return TransferStatus.COMPLETE
+            if await self._verify(item, final_path):
+                transfer.status = TransferStatus.COMPLETE
+                return transfer.status
             await asyncio.to_thread(final_path.unlink)
 
         if partial_path.exists():
-            verification = await self._verify(item, transfer, partial_path)
-            if verification is not None:
+            if await self._verify(item, partial_path):
                 await asyncio.to_thread(os.replace, partial_path, final_path)
                 if temp_path.exists():
                     await asyncio.to_thread(temp_path.unlink)
-                _set_transfer(item.drive_item_id, TransferStatus.COMPLETE, verification=verification)
-                return TransferStatus.COMPLETE
+                transfer.status = TransferStatus.COMPLETE
+                return transfer.status
             await asyncio.to_thread(partial_path.unlink)
 
         control_path = Path(f"{temp_path}.aria2")
         if temp_path.exists() and control_path.exists():
-            logger.info("Resuming interrupted download: %s", item.relative_path)
-            await self._downloads.resume(item)
-            return TransferStatus.DOWNLOADING
+            logger.info("Resuming interrupted download: %s", transfer.file.relative_path)
+            transfer.aria2_gid = await self._downloads.resume(item, transfer.file.relative_path)
+            transfer.status = TransferStatus.DOWNLOADING
+            return transfer.status
 
         if temp_path.exists():
-            verification = await self._verify(item, transfer, temp_path)
-            if verification is not None:
-                _set_transfer(item.drive_item_id, TransferStatus.STAGED, verification=verification)
-                logger.info("Verified staged download: %s", item.relative_path)
-                return TransferStatus.STAGED
+            if await self._verify(item, temp_path):
+                transfer.status = TransferStatus.STAGED
+                logger.info("Verified staged download: %s", transfer.file.relative_path)
+                return transfer.status
             await asyncio.to_thread(temp_path.unlink)
-            if control_path.exists():
-                await asyncio.to_thread(control_path.unlink)
 
-        _set_transfer(item.drive_item_id, TransferStatus.PENDING, aria2_gid=None)
-        return TransferStatus.PENDING
+        transfer.status = TransferStatus.PENDING
+        return transfer.status
 
-    async def check_download(self, item: OneDriveItem, transfer: TransferRecord) -> TransferStatus:
-        """Validate an aria2-complete temp file before it can be moved."""
-        metadata_error = _metadata_error(item)
-        if metadata_error is not None:
-            _set_transfer(item.drive_item_id, TransferStatus.FAILED, last_error=metadata_error)
-            return TransferStatus.FAILED
-        temp_path = self._task.temp_path(item.drive_item_id, _required(item.name, "file name"))
-        verification = await self._verify(item, transfer, temp_path) if temp_path.exists() else None
-        if verification is not None:
-            _set_transfer(item.drive_item_id, TransferStatus.STAGED, verification=verification)
-            logger.info("Verified downloaded file: %s", item.relative_path)
-            return TransferStatus.STAGED
+    async def submit(self, transfer: Transfer) -> None:
+        transfer.aria2_gid = await self._downloads.submit(
+            transfer.file.item, transfer.file.relative_path
+        )
+        transfer.status = TransferStatus.DOWNLOADING
 
+    async def poll(self, transfer: Transfer) -> TransferStatus:
+        if transfer.aria2_gid is None:
+            return self._fail(transfer, "Download has no aria2 GID")
+        status, error = await self._downloads.poll(transfer.aria2_gid)
+        if status in {"active", "waiting", "paused"}:
+            return transfer.status
+        if status in {"error", "removed"}:
+            return self._fail(transfer, error or f"aria2 task {status}")
+        logger.info("Download finished, verifying: %s", transfer.file.relative_path)
+        return await self.check_download(transfer)
+
+    async def check_download(self, transfer: Transfer) -> TransferStatus:
+        item = transfer.file.item
+        temp_path = self._temp_path(item)
+        if await self._verify(item, temp_path):
+            transfer.status = TransferStatus.STAGED
+            logger.info("Verified downloaded file: %s", transfer.file.relative_path)
+            return transfer.status
         if temp_path.exists():
             await asyncio.to_thread(temp_path.unlink)
         control_path = Path(f"{temp_path}.aria2")
         if control_path.exists():
             await asyncio.to_thread(control_path.unlink)
-        _set_transfer(item.drive_item_id, TransferStatus.PENDING, aria2_gid=None)
-        logger.warning("Downloaded file failed verification; retrying: %s", item.relative_path)
-        return TransferStatus.PENDING
+        logger.warning("Downloaded file failed verification; retrying: %s", transfer.file.relative_path)
+        transfer.aria2_gid = None
+        transfer.status = TransferStatus.PENDING
+        return transfer.status
 
-    async def move(self, item: OneDriveItem, transfer: TransferRecord) -> TransferStatus:
-        """Copy a verified temp file through a verified partial file into dist."""
-        temp_path = self._task.temp_path(item.drive_item_id, _required(item.name, "file name"))
-        final_path = self._task.download_path(_required(item.relative_path, "relative path"))
+    async def move(self, transfer: Transfer) -> TransferStatus:
+        item = transfer.file.item
+        temp_path = self._temp_path(item)
+        final_path = self._task.dist_path(transfer.file.relative_path)
         partial_path = self._task.partial_path(final_path)
-        source_verification = await self._verify(item, transfer, temp_path) if temp_path.exists() else None
-        if source_verification is None:
-            return await self.reconcile(item, transfer)
+        if not await self._verify(item, temp_path):
+            return await self.reconcile(transfer)
 
-        _set_transfer(item.drive_item_id, TransferStatus.MOVING)
-        logger.info("Moving to final directory: %s", item.relative_path)
+        transfer.status = TransferStatus.MOVING
+        logger.info("Moving to final directory: %s", transfer.file.relative_path)
         await asyncio.to_thread(final_path.parent.mkdir, parents=True, exist_ok=True)
         if partial_path.exists():
             await asyncio.to_thread(partial_path.unlink)
         await asyncio.to_thread(shutil.copyfile, temp_path, partial_path)
-        verification = await self._verify(item, transfer, partial_path)
-        if verification is None:
+        if not await self._verify(item, partial_path):
             await asyncio.to_thread(partial_path.unlink)
-            _set_transfer(item.drive_item_id, TransferStatus.STAGED, verification=source_verification)
-            logger.warning("Moved file failed verification; retrying move: %s", item.relative_path)
-            return TransferStatus.STAGED
+            transfer.status = TransferStatus.STAGED
+            logger.warning("Moved file failed verification; retrying move: %s", transfer.file.relative_path)
+            return transfer.status
 
         await asyncio.to_thread(os.replace, partial_path, final_path)
         await asyncio.to_thread(temp_path.unlink)
-        _set_transfer(item.drive_item_id, TransferStatus.COMPLETE, verification=verification)
-        logger.info("Transfer complete: %s", item.relative_path)
-        return TransferStatus.COMPLETE
+        transfer.status = TransferStatus.COMPLETE
+        logger.info("Transfer complete: %s", transfer.file.relative_path)
+        return transfer.status
 
-    async def _verify(
-        self, item: OneDriveItem, transfer: TransferRecord, path: Path
-    ) -> Verification | None:
-        if item.size is None or item.hash_type is None or item.hash is None:
-            return None
+    def _temp_path(self, item: OneDriveItem) -> Path:
+        if item.name is None:
+            raise ValueError(f"OneDrive item {item.drive_item_id} has no file name")
+        return self._task.temp_path(item.drive_item_id, item.name)
+
+    async def _verify(self, item: OneDriveItem, path: Path) -> bool:
+        error = _metadata_error(item)
+        if error is not None:
+            return False
         try:
             stat = await asyncio.to_thread(path.stat)
         except OSError:
-            return None
-        if (
-            stat.st_size == item.size
-            and transfer.verified_size == stat.st_size
-            and transfer.verified_mtime == stat.st_mtime_ns
-            and transfer.verified_hash == item.hash
-        ):
-            return Verification(stat.st_size, stat.st_mtime_ns, item.hash)
-        size, mtime_ns, digest = await asyncio.to_thread(_verify_file, path, item.size, item.hash_type)
-        if digest != item.hash:
-            return None
-        return Verification(size, mtime_ns, digest)
+            return False
+        if stat.st_size != item.size:
+            return False
+        digest = await asyncio.to_thread(file_hash, path, item.hash_type)
+        return digest == item.hash
 
-
-def _verify_file(path: Path, expected_size: int, hash_type: str) -> tuple[int, int, str]:
-    stat = path.stat()
-    if stat.st_size != expected_size:
-        return stat.st_size, stat.st_mtime_ns, ""
-    return stat.st_size, stat.st_mtime_ns, file_hash(path, hash_type)
-
-
-def _set_transfer(
-    drive_item_id: str,
-    status: TransferStatus,
-    *,
-    aria2_gid: str | None | object = ...,
-    verification: Verification | None = None,
-    last_error: str | None = None,
-) -> None:
-    values: dict[str, str | int | None] = {"status": status.value, "last_error": last_error}
-    if aria2_gid is not ...:
-        values["aria2_gid"] = aria2_gid  # type: ignore[assignment]
-    if verification is not None:
-        values.update(
-            verified_size=verification.size,
-            verified_mtime=verification.mtime_ns,
-            verified_hash=verification.digest,
-        )
-    TransferRecord.update(**values).where(TransferRecord.drive_item_id == drive_item_id).execute()
-
-
-def _required(value: str | None, label: str) -> str:
-    if value is None:
-        raise ValueError(f"OneDrive item has no {label}")
-    return value
+    @staticmethod
+    def _fail(transfer: Transfer, message: str) -> TransferStatus:
+        transfer.status = TransferStatus.FAILED
+        transfer.last_error = message
+        logger.error("Transfer failed for %s: %s", transfer.file.relative_path, message)
+        return transfer.status
 
 
 def _metadata_error(item: OneDriveItem) -> str | None:

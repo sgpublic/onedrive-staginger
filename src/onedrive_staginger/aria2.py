@@ -11,7 +11,7 @@ import aiohttp
 from aioaria2 import Aria2HttpClient
 
 from .config import Aria2Config, SchedulerConfig
-from .database import OneDriveItem, TransferRecord, TransferStatus
+from .database import OneDriveItem
 from .onedrive import OneDriveClient
 from .task import MigrationTask
 from .utils.network import available_local_port
@@ -103,7 +103,7 @@ class Aria2DownloadManager:
         self._task = task
         self._scheduler = scheduler
 
-    async def submit(self, item: OneDriveItem) -> str:
+    async def submit(self, item: OneDriveItem, relative_path: str) -> str:
         """Submit a file with a fresh Graph URL, resuming an existing control file."""
         if item.name is None:
             raise ValueError(f"OneDrive item {item.drive_item_id} has no file name")
@@ -112,41 +112,32 @@ class Aria2DownloadManager:
         output_path.parent.mkdir(parents=True, exist_ok=True)
         download_url = await self._onedrive.get_download_url(self._drive_id, item.drive_item_id)
         gid = await self._client.addUri([download_url], self._options(output_path))
-        _set_transfer_downloading(item.drive_item_id, gid)
-        logger.info("Download submitted: %s", item.relative_path)
+        logger.info("Download submitted: %s", relative_path)
         return gid
 
-    async def resume(self, item: OneDriveItem) -> str:
+    async def resume(self, item: OneDriveItem, relative_path: str) -> str:
         """Resume an interrupted file using a newly issued Graph download URL."""
-        return await self.submit(item)
+        return await self.submit(item, relative_path)
 
-    async def poll(self, transfer: TransferRecord) -> str:
-        """Persist aria2's current terminal or in-progress status for a transfer."""
-        if transfer.aria2_gid is None:
-            raise ValueError(f"Transfer {transfer.drive_item_id} has no aria2 GID")
-
-        response = await self._client.tellStatus(
-            transfer.aria2_gid, ["status", "errorCode", "errorMessage"]
-        )
+    async def poll(self, gid: str) -> tuple[str, str | None]:
+        """Return aria2's status without persisting transfer state."""
+        response = await self._client.tellStatus(gid, ["status", "errorCode", "errorMessage"])
         if not isinstance(response, dict) or not isinstance(response.get("status"), str):
             raise ValueError(f"aria2 returned an invalid status for {transfer.aria2_gid}")
 
         status = response["status"]
         if status in {"active", "waiting", "paused"}:
-            _set_transfer_downloading(transfer.drive_item_id, transfer.aria2_gid)
+            return status, None
         elif status == "complete":
-            _set_transfer_status(transfer.drive_item_id, TransferStatus.CHECKING)
-            logger.info("Download finished, verifying: %s", transfer.drive_item_id)
+            return status, None
         elif status in {"error", "removed"}:
             message = response.get("errorMessage") or f"aria2 task {status}"
             code = response.get("errorCode")
             if code:
                 message = f"aria2 error {code}: {message}"
-            _set_transfer_status(transfer.drive_item_id, TransferStatus.FAILED, str(message))
-            logger.error("Download failed for %s: %s", transfer.drive_item_id, message)
+            return status, str(message)
         else:
             raise ValueError(f"aria2 returned unknown status '{status}'")
-        return status
 
     def _options(self, output_path: Path) -> dict[str, str]:
         options = {
@@ -158,28 +149,3 @@ class Aria2DownloadManager:
         if self._scheduler.disable_http2:
             options["enable-http2"] = "false"
         return options
-
-
-def _set_transfer_downloading(drive_item_id: str, gid: str) -> None:
-    _update_transfer(
-        drive_item_id,
-        status=TransferStatus.DOWNLOADING.value,
-        aria2_gid=gid,
-        last_error=None,
-    )
-
-
-def _set_transfer_status(
-    drive_item_id: str, status: TransferStatus, last_error: str | None = None
-) -> None:
-    _update_transfer(drive_item_id, status=status.value, last_error=last_error)
-
-
-def _update_transfer(drive_item_id: str, **values: str | None) -> None:
-    updated = (
-        TransferRecord.update(**values)
-        .where(TransferRecord.drive_item_id == drive_item_id)
-        .execute()
-    )
-    if updated != 1:
-        raise ValueError(f"Transfer record does not exist for {drive_item_id}")

@@ -2,7 +2,14 @@
 
 from .controller import MigrationController, MigrationError
 from .manifest import ManifestPipeline
-from .migration import MigrationWorker
-from .scheduler import TransferScheduler
+from .migration import ManifestFile, MigrationWorker, Transfer, TransferStatus
 
-__all__ = ["ManifestPipeline", "MigrationController", "MigrationError", "MigrationWorker", "TransferScheduler"]
+__all__ = [
+    "ManifestPipeline",
+    "ManifestFile",
+    "MigrationController",
+    "MigrationError",
+    "MigrationWorker",
+    "Transfer",
+    "TransferStatus",
+]

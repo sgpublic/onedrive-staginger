@@ -23,7 +23,7 @@ from .onedrive import (
     request_device_code,
 )
 from .task import MigrationTask
-from .pipeline import ManifestPipeline, MigrationController, MigrationWorker, TransferScheduler
+from .pipeline import ManifestPipeline, MigrationController, MigrationWorker
 
 
 logger = logging.getLogger(__name__)
@@ -125,10 +125,7 @@ async def download(config_dir: Path, task: MigrationTask) -> None:
                     aria2_client, client, account.drive_id, task, config.scheduler
                 )
                 worker = MigrationWorker(task, downloads)
-                scheduler = TransferScheduler(downloads, worker, config.scheduler, task.manifest_root)
-                controller = MigrationController(
-                    worker, scheduler, config.scheduler, task.manifest_root
-                )
+                controller = MigrationController(worker, config.scheduler, task)
                 await controller.run()
     finally:
         if not database.is_closed():
