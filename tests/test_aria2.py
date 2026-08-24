@@ -28,7 +28,9 @@ class Aria2ProcessTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
         self.temp_dir = tempfile.TemporaryDirectory()
         self.config_dir = Path(self.temp_dir.name)
-        self.config = Aria2Config(executable="aria2c-test")
+        self.config = Aria2Config(
+            executable="aria2c-test", disk_cache=256 * 1024 * 1024, file_allocation="falloc"
+        )
 
     async def asyncTearDown(self) -> None:
         self.temp_dir.cleanup()
@@ -47,6 +49,8 @@ class Aria2ProcessTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(any(arg.startswith("--rpc-listen-port=") for arg in args))
         self.assertTrue(any(arg.startswith("--rpc-secret=") for arg in args))
         self.assertIn("--continue=true", args)
+        self.assertIn("--disk-cache=268435456", args)
+        self.assertIn("--file-allocation=falloc", args)
         self.assertIn(f"--save-session={self.config_dir / 'aria2.session'}", args)
 
     async def test_creates_client_with_private_rpc_credentials(self) -> None:

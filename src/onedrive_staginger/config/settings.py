@@ -23,6 +23,8 @@ class AzureConfig:
 @dataclass(frozen=True, slots=True)
 class Aria2Config:
     executable: str
+    disk_cache: int = 16 * 1024 * 1024
+    file_allocation: str = "prealloc"
 
 
 @dataclass(frozen=True, slots=True)
@@ -89,6 +91,8 @@ class AppConfig:
             ),
             aria2=Aria2Config(
                 executable=_required_str(aria2, "executable"),
+                disk_cache=_aria2_cache_bytes(aria2, "disk_cache", default="16M"),
+                file_allocation=_aria2_file_allocation(aria2),
             ),
             scheduler=SchedulerConfig(
                 api_requests_per_second=_positive_int(
@@ -142,3 +146,23 @@ def _aria2_size_bytes(value: dict[str, Any], key: str, *, default: str) -> int:
     if suffix in multiplier:
         return int(item[:-1]) * multiplier[suffix]
     return int(item)
+
+
+def _aria2_cache_bytes(value: dict[str, Any], key: str, *, default: str) -> int:
+    item = value.get(key, default)
+    if not isinstance(item, str) or not re.fullmatch(r"(?:0|[1-9][0-9]*[KMG]?)", item):
+        raise ConfigError(f"Configuration field '{key}' must be an aria2 size such as '256M'")
+    multiplier = {"K": 1024, "M": 1024**2, "G": 1024**3}
+    suffix = item[-1]
+    if suffix in multiplier:
+        return int(item[:-1]) * multiplier[suffix]
+    return int(item)
+
+
+def _aria2_file_allocation(value: dict[str, Any]) -> str:
+    item = value.get("file_allocation", "prealloc")
+    if not isinstance(item, str) or item not in {"none", "prealloc", "trunc", "falloc"}:
+        raise ConfigError(
+            "Configuration field 'file_allocation' must be one of none, prealloc, trunc, falloc"
+        )
+    return item

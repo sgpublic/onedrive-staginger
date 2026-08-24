@@ -31,9 +31,13 @@ cp config/config.example.yaml config/config.yaml
 
 在 Microsoft Entra 管理中心创建应用注册，并在 `config/config.yaml` 中填写 `tenant_id` 和 `client_id`。应用需要启用公共客户端流，并授予 Microsoft Graph 的委托权限：`User.Read`、`Files.Read` 和 `offline_access`。不需要创建 Client Secret 或 Redirect URI。
 
-可按本机网络和磁盘性能调整 `scheduler`：
+可按本机网络和磁盘性能调整 `scheduler`。机械盘还可调整 `aria2`：
 
 ```yaml
+aria2:
+  disk_cache: "256M"        # 所有下载共享的内存写入缓存
+  file_allocation: "falloc" # ext4、XFS、btrfs 推荐，快速预分配大文件
+
 scheduler:
   max_downloads: 2         # 同时下载的文件数
   max_moves: 1             # 同时从 temp 搬运到 dist 的文件数
@@ -44,6 +48,7 @@ scheduler:
 ```
 
 `temp` 的容量由使用者自行控制；请根据可用空间设置 `max_downloads`。
+`disk_cache` 默认值为 `16M`，设为 `0` 可禁用。缓存可减少机械盘随机写入，并让紧随下载的哈希校验复用内存中的数据。`falloc` 仅建议用于 ext4、XFS、btrfs 等支持快速预分配的文件系统；FAT32、ext3 或网络挂载目录请保留 `prealloc`。
 
 ### 2. 登录 OneDrive
 

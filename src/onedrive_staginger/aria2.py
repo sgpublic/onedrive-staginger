@@ -56,6 +56,8 @@ class Aria2Process:
             f"--rpc-listen-port={self._port}",
             f"--rpc-secret={self._secret}",
             "--continue=true",
+            f"--disk-cache={self._config.disk_cache}",
+            f"--file-allocation={self._config.file_allocation}",
             f"--save-session={self.session_path}",
             "--save-session-interval=60",
             stdout=asyncio.subprocess.DEVNULL,

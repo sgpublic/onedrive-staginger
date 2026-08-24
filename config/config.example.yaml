@@ -5,6 +5,8 @@ azure:
 
 aria2:
   executable: "aria2c"
+  disk_cache: "16M"
+  file_allocation: "prealloc"
 
 scheduler:
   api_requests_per_second: 10

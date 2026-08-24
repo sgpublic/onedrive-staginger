@@ -41,6 +41,8 @@ class AppConfigTests(unittest.TestCase):
 
         self.assertIs(config, AppConfig.get())
         self.assertEqual(config.azure.client_id, "client")
+        self.assertEqual(config.aria2.disk_cache, 16 * 1024 * 1024)
+        self.assertEqual(config.aria2.file_allocation, "prealloc")
         self.assertEqual(config.scheduler.api_requests_per_second, 10)
         self.assertEqual(config.scheduler.min_split_size, 1024 * 1024)
         self.assertEqual(config.scheduler.max_split_size, 4 * 1024 * 1024)
@@ -72,6 +74,18 @@ class AppConfigTests(unittest.TestCase):
         )
 
         with self.assertRaisesRegex(ConfigError, "fast_verify_after_download"):
+            AppConfig.initialize(self.config_dir)
+
+    def test_rejects_invalid_aria2_cache_or_allocation_method(self) -> None:
+        self.path.write_text(VALID_CONFIG.replace("executable: aria2c", 'executable: aria2c\n  disk_cache: "1T"'), encoding="utf-8")
+
+        with self.assertRaisesRegex(ConfigError, "disk_cache"):
+            AppConfig.initialize(self.config_dir)
+
+        AppConfig._instance = None
+        self.path.write_text(VALID_CONFIG.replace("executable: aria2c", "executable: aria2c\n  file_allocation: invalid"), encoding="utf-8")
+
+        with self.assertRaisesRegex(ConfigError, "file_allocation"):
             AppConfig.initialize(self.config_dir)
 
     def test_rejects_maximum_smaller_than_minimum_split_size(self) -> None:
