@@ -26,6 +26,7 @@ class Aria2Status:
     status: str
     completed_bytes: int
     total_bytes: int
+    download_speed: int
     error: str | None = None
 
 
@@ -133,7 +134,7 @@ class Aria2DownloadManager:
         """Return aria2's status without persisting transfer state."""
         response = await self._client.tellStatus(
             gid,
-            ["status", "completedLength", "totalLength", "errorCode", "errorMessage"],
+            ["status", "completedLength", "totalLength", "downloadSpeed", "errorCode", "errorMessage"],
         )
         if not isinstance(response, dict) or not isinstance(response.get("status"), str):
             raise ValueError(f"aria2 returned an invalid status for {gid}")
@@ -141,16 +142,17 @@ class Aria2DownloadManager:
         status = response["status"]
         completed = _byte_value(response.get("completedLength"))
         total = _byte_value(response.get("totalLength"))
+        speed = _byte_value(response.get("downloadSpeed"))
         if status in {"active", "waiting", "paused"}:
-            return Aria2Status(status, completed, total)
+            return Aria2Status(status, completed, total, speed)
         elif status == "complete":
-            return Aria2Status(status, completed, total)
+            return Aria2Status(status, completed, total, speed)
         elif status in {"error", "removed"}:
             message = response.get("errorMessage") or f"aria2 task {status}"
             code = response.get("errorCode")
             if code:
                 message = f"aria2 error {code}: {message}"
-            return Aria2Status(status, completed, total, str(message))
+            return Aria2Status(status, completed, total, speed, str(message))
         else:
             raise ValueError(f"aria2 returned unknown status '{status}'")
 

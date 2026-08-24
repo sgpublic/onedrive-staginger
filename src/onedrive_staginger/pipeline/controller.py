@@ -123,7 +123,10 @@ class MigrationController:
             status = await self._worker.poll(transfer)
             if self._progress is not None:
                 self._progress.update_download(
-                    transfer.id, transfer.downloaded_bytes, transfer.file.item.size or 0
+                    transfer.id,
+                    transfer.downloaded_bytes,
+                    transfer.file.item.size or 0,
+                    transfer.download_speed,
                 )
             if status == TransferStatus.STAGED:
                 self._start_moves()
@@ -141,8 +144,8 @@ class MigrationController:
             if self._progress is not None:
                 self._progress.start_move(transfer.id, transfer.file.item.size or 0)
                 loop = asyncio.get_running_loop()
-                on_progress = lambda completed, transfer=transfer: loop.call_soon_threadsafe(
-                    self._progress.update_move, transfer.id, completed
+                on_progress = lambda completed, speed, transfer=transfer: loop.call_soon_threadsafe(
+                    self._progress.update_move, transfer.id, completed, speed
                 )
             else:
                 on_progress = None

@@ -9,6 +9,7 @@ from enum import StrEnum
 import logging
 import os
 from pathlib import Path
+import time
 
 from ..aria2 import Aria2DownloadManager
 from ..database import OneDriveItem
@@ -42,6 +43,7 @@ class Transfer:
     last_error: str | None = None
     resume: bool = False
     downloaded_bytes: int = 0
+    download_speed: int = 0
 
     @property
     def id(self) -> str:
@@ -114,6 +116,7 @@ class MigrationWorker:
             return self._fail(transfer, "Download has no aria2 GID")
         progress = await self._downloads.poll(transfer.aria2_gid)
         transfer.downloaded_bytes = progress.completed_bytes
+        transfer.download_speed = progress.download_speed
         if progress.status in {"active", "waiting", "paused"}:
             return transfer.status
         if progress.status in {"error", "removed"}:
@@ -140,7 +143,7 @@ class MigrationWorker:
         return transfer.status
 
     async def move(
-        self, transfer: Transfer, on_progress: Callable[[int], None] | None = None
+        self, transfer: Transfer, on_progress: Callable[[int, int], None] | None = None
     ) -> TransferStatus:
         item = transfer.file.item
         temp_path = self._temp_path(item)
@@ -202,11 +205,15 @@ def _metadata_error(item: OneDriveItem) -> str | None:
     return None
 
 
-def _copy_file(source: Path, destination: Path, on_progress: Callable[[int], None] | None) -> None:
+def _copy_file(
+    source: Path, destination: Path, on_progress: Callable[[int, int], None] | None
+) -> None:
     copied = 0
+    started_at = time.monotonic()
     with source.open("rb") as input_file, destination.open("wb") as output_file:
         while chunk := input_file.read(1024 * 1024):
             output_file.write(chunk)
             copied += len(chunk)
             if on_progress is not None:
-                on_progress(copied)
+                elapsed = time.monotonic() - started_at
+                on_progress(copied, int(copied / elapsed) if elapsed else 0)

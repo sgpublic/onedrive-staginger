@@ -19,6 +19,7 @@ class TransferProgress:
             TextColumn("{task.description}"),
             BarColumn(),
             DownloadColumn(),
+            TextColumn("{task.fields[speed]}"),
             TimeRemainingColumn(),
             console=self._console,
         )
@@ -64,19 +65,22 @@ class TransferProgress:
         *,
         counts_download: bool,
     ) -> None:
-        self._slot_tasks[transfer_id] = self._slots.add_task(description, total=total, completed=completed)
+        self._slot_tasks[transfer_id] = self._slots.add_task(
+            description, total=total, completed=completed, speed=""
+        )
         self._slot_names[transfer_id] = description.removeprefix("准备传输：")
         if counts_download:
             self._downloaded[transfer_id] = completed
         self._update_total()
 
-    def update_download(self, transfer_id: str, completed: int, total: int) -> None:
+    def update_download(self, transfer_id: str, completed: int, total: int, speed: int) -> None:
         task_id = self._slot_tasks[transfer_id]
         self._slots.update(
             task_id,
             completed=completed,
             total=total,
             description=f"下载中：{self._slot_names[transfer_id]}",
+            speed=_speed_text(speed),
         )
         self._downloaded[transfer_id] = completed
         self._update_total()
@@ -90,8 +94,10 @@ class TransferProgress:
             completed=0,
         )
 
-    def update_move(self, transfer_id: str, completed: int) -> None:
-        self._slots.update(self._slot_tasks[transfer_id], completed=completed)
+    def update_move(self, transfer_id: str, completed: int, speed: int) -> None:
+        self._slots.update(
+            self._slot_tasks[transfer_id], completed=completed, speed=_speed_text(speed)
+        )
 
     def finish_slot(self, transfer_id: str, *, counts_download: bool) -> None:
         task_id = self._slot_tasks.pop(transfer_id)
@@ -109,3 +115,15 @@ class TransferProgress:
             completed=sum(self._downloaded.values()),
             files=f"{self._completed_files}/{self._total_files} 个文件",
         )
+
+
+def _speed_text(bytes_per_second: int) -> str:
+    if bytes_per_second <= 0:
+        return ""
+    units = ("B/s", "KiB/s", "MiB/s", "GiB/s")
+    value = float(bytes_per_second)
+    for unit in units[:-1]:
+        if value < 1024:
+            return f"{value:.1f} {unit}"
+        value /= 1024
+    return f"{value:.1f} {units[-1]}"
