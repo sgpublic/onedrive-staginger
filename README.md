@@ -38,7 +38,8 @@ scheduler:
   max_downloads: 2         # 同时下载的文件数
   max_moves: 1             # 同时从 temp 搬运到 dist 的文件数
   connections_per_file: 8  # 每个文件的 aria2 连接数
-  min_split_size: "4M"     # aria2 允许继续切分文件的最小分段大小
+  min_split_size: "1M"     # aria2 分片阈值下限
+  max_split_size: "4M"     # 按文件大小计算出的分片阈值上限
 ```
 
 `temp` 的容量由使用者自行控制；请根据可用空间设置 `max_downloads`。

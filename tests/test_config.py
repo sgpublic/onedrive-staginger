@@ -18,7 +18,8 @@ scheduler:
   max_downloads: 2
   max_moves: 1
   connections_per_file: 8
-  min_split_size: "4M"
+  min_split_size: "1M"
+  max_split_size: "4M"
   poll_interval_seconds: 5
 """
 
@@ -41,7 +42,8 @@ class AppConfigTests(unittest.TestCase):
         self.assertIs(config, AppConfig.get())
         self.assertEqual(config.azure.client_id, "client")
         self.assertEqual(config.scheduler.api_requests_per_second, 10)
-        self.assertEqual(config.scheduler.min_split_size, "4M")
+        self.assertEqual(config.scheduler.min_split_size, 1024 * 1024)
+        self.assertEqual(config.scheduler.max_split_size, 4 * 1024 * 1024)
         with self.assertRaises(FrozenInstanceError):
             config.scheduler.max_downloads = 3  # type: ignore[misc]
 
@@ -58,7 +60,13 @@ class AppConfigTests(unittest.TestCase):
             AppConfig.initialize(self.config_dir)
 
     def test_rejects_invalid_min_split_size(self) -> None:
-        self.path.write_text(VALID_CONFIG.replace('min_split_size: "4M"', "min_split_size: 4"), encoding="utf-8")
+        self.path.write_text(VALID_CONFIG.replace('min_split_size: "1M"', "min_split_size: 4"), encoding="utf-8")
 
         with self.assertRaisesRegex(ConfigError, "min_split_size"):
+            AppConfig.initialize(self.config_dir)
+
+    def test_rejects_maximum_smaller_than_minimum_split_size(self) -> None:
+        self.path.write_text(VALID_CONFIG.replace('max_split_size: "4M"', 'max_split_size: "512K"'), encoding="utf-8")
+
+        with self.assertRaisesRegex(ConfigError, "max_split_size"):
             AppConfig.initialize(self.config_dir)

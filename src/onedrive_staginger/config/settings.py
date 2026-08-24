@@ -31,7 +31,8 @@ class SchedulerConfig:
     max_downloads: int = 2
     max_moves: int = 1
     connections_per_file: int = 8
-    min_split_size: str = "4M"
+    min_split_size: int = 1024 * 1024
+    max_split_size: int = 4 * 1024 * 1024
     poll_interval_seconds: int = 5
 
 
@@ -76,6 +77,10 @@ class AppConfig:
         azure = _required_mapping(raw, "azure")
         aria2 = _required_mapping(raw, "aria2")
         scheduler = _required_mapping(raw, "scheduler")
+        min_split_size = _aria2_size_bytes(scheduler, "min_split_size", default="1M")
+        max_split_size = _aria2_size_bytes(scheduler, "max_split_size", default="4M")
+        if max_split_size < min_split_size:
+            raise ConfigError("Configuration field 'max_split_size' must be at least min_split_size")
         return cls(
             azure=AzureConfig(
                 tenant_id=_required_str(azure, "tenant_id"),
@@ -91,7 +96,8 @@ class AppConfig:
                 max_downloads=_positive_int(scheduler, "max_downloads"),
                 max_moves=_positive_int(scheduler, "max_moves"),
                 connections_per_file=_positive_int(scheduler, "connections_per_file"),
-                min_split_size=_aria2_size(scheduler, "min_split_size", default="4M"),
+                min_split_size=min_split_size,
+                max_split_size=max_split_size,
                 poll_interval_seconds=_positive_int(scheduler, "poll_interval_seconds"),
             ),
         )
@@ -118,8 +124,12 @@ def _positive_int(value: dict[str, Any], key: str, *, default: int | None = None
     return item
 
 
-def _aria2_size(value: dict[str, Any], key: str, *, default: str) -> str:
+def _aria2_size_bytes(value: dict[str, Any], key: str, *, default: str) -> int:
     item = value.get(key, default)
     if not isinstance(item, str) or not re.fullmatch(r"[1-9][0-9]*[KMG]?", item):
         raise ConfigError(f"Configuration field '{key}' must be an aria2 size such as '4M'")
-    return item
+    multiplier = {"K": 1024, "M": 1024**2, "G": 1024**3}
+    suffix = item[-1]
+    if suffix in multiplier:
+        return int(item[:-1]) * multiplier[suffix]
+    return int(item)

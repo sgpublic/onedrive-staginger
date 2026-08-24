@@ -131,15 +131,33 @@ class StatelessPipelineTests(unittest.TestCase):
         self.assertEqual(worker.submitted, ["01.mkv"])
         self.assertEqual(queued[0].id, "second")
 
-    def test_aria2_options_include_configured_minimum_split_size(self) -> None:
+    def test_aria2_options_cap_split_size_by_file_size_per_connection(self) -> None:
         task = MigrationTask(self.root / "temp", self.root / "dist", "/Media")
         manager = Aria2DownloadManager(
-            None, None, "drive", task, SchedulerConfig(min_split_size="4M")  # type: ignore[arg-type]
+            None,
+            None,
+            "drive",
+            task,
+            SchedulerConfig(min_split_size=1024 * 1024, max_split_size=4 * 1024 * 1024),  # type: ignore[arg-type]
         )
 
-        options = manager._options(task.temp_path("item", "01.mkv"))
+        options = manager._options(task.temp_path("item", "01.mkv"), 16 * 1024 * 1024)
 
-        self.assertEqual(options["min-split-size"], "4M")
+        self.assertEqual(options["min-split-size"], str(2 * 1024 * 1024))
+
+    def test_aria2_options_keep_configured_minimum_split_size_for_small_files(self) -> None:
+        task = MigrationTask(self.root / "temp", self.root / "dist", "/Media")
+        manager = Aria2DownloadManager(
+            None,
+            None,
+            "drive",
+            task,
+            SchedulerConfig(min_split_size=1024 * 1024, max_split_size=4 * 1024 * 1024),  # type: ignore[arg-type]
+        )
+
+        options = manager._options(task.temp_path("item", "01.mkv"), 4 * 1024 * 1024)
+
+        self.assertEqual(options["min-split-size"], str(1024 * 1024))
 
 
 if __name__ == "__main__":

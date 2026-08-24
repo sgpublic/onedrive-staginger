@@ -123,7 +123,9 @@ class Aria2DownloadManager:
         logger.info("Getting download URL: %s", relative_path)
         download_url = await self._onedrive.get_download_url(self._drive_id, item.drive_item_id)
         logger.info("Submitting download task to aria2: %s", relative_path)
-        gid = await self._client.addUri([download_url], self._options(output_path))
+        if item.size is None:
+            raise ValueError(f"OneDrive item {item.drive_item_id} has no size")
+        gid = await self._client.addUri([download_url], self._options(output_path, item.size))
         return gid
 
     async def resume(self, item: OneDriveItem, relative_path: str) -> str:
@@ -156,15 +158,22 @@ class Aria2DownloadManager:
         else:
             raise ValueError(f"aria2 returned unknown status '{status}'")
 
-    def _options(self, output_path: Path) -> dict[str, str]:
+    def _options(self, output_path: Path, file_size: int) -> dict[str, str]:
         options = {
             "dir": str(output_path.parent),
             "out": output_path.name,
             "split": str(self._scheduler.connections_per_file),
             "max-connection-per-server": str(self._scheduler.connections_per_file),
-            "min-split-size": self._scheduler.min_split_size,
+            "min-split-size": str(self._effective_min_split_size(file_size)),
         }
         return options
+
+    def _effective_min_split_size(self, file_size: int) -> int:
+        per_connection = file_size // self._scheduler.connections_per_file
+        return max(
+            self._scheduler.min_split_size,
+            min(self._scheduler.max_split_size, per_connection),
+        )
 
 
 def _byte_value(value: object) -> int:
