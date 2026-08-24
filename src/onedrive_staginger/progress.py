@@ -7,7 +7,24 @@ import logging
 from rich.console import Console, Group
 from rich.live import Live
 from rich.logging import RichHandler
-from rich.progress import BarColumn, DownloadColumn, Progress, TaskID, TextColumn, TimeRemainingColumn
+from rich.progress import (
+    BarColumn,
+    DownloadColumn,
+    Progress,
+    ProgressColumn,
+    Task,
+    TaskID,
+    TextColumn,
+    TimeRemainingColumn,
+)
+from rich.text import Text
+
+
+class TwoDecimalDownloadColumn(ProgressColumn):
+    """Render completed and total bytes with two decimal places."""
+
+    def render(self, task: Task) -> Text:
+        return Text(f"{_byte_text(task.completed)} / {_byte_text(task.total or 0)}")
 
 
 class TransferProgress:
@@ -26,7 +43,7 @@ class TransferProgress:
         self._total = Progress(
             TextColumn("总下载 {task.fields[files]}"),
             BarColumn(),
-            DownloadColumn(),
+            TwoDecimalDownloadColumn(),
             console=self._console,
         )
         self._live = Live(Group(self._slots, self._total), console=self._console, refresh_per_second=10)
@@ -127,3 +144,12 @@ def _speed_text(bytes_per_second: int) -> str:
             return f"{value:.1f} {unit}"
         value /= 1024
     return f"{value:.1f} {units[-1]}"
+
+
+def _byte_text(value: float) -> str:
+    units = ("B", "KiB", "MiB", "GiB", "TiB")
+    for unit in units[:-1]:
+        if value < 1024:
+            return f"{value:.2f} {unit}"
+        value /= 1024
+    return f"{value:.2f} {units[-1]}"

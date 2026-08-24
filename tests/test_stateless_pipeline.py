@@ -25,6 +25,7 @@ from onedrive_staginger.database import (
 )
 from onedrive_staginger.pipeline import ManifestFile, MigrationController, MigrationWorker, Transfer, TransferStatus
 from onedrive_staginger.pipeline.migration import _remote_mtime_ns
+from onedrive_staginger.progress import _byte_text
 from onedrive_staginger.task import MigrationTask
 
 
@@ -130,6 +131,11 @@ class StatelessPipelineTests(unittest.TestCase):
 
     def test_invalid_remote_mtime_falls_back_without_crashing(self) -> None:
         self.assertIsNone(_remote_mtime_ns("not-a-time"))
+
+    def test_total_progress_byte_format_uses_two_decimal_places(self) -> None:
+        self.assertEqual(_byte_text(512), "512.00 B")
+        self.assertEqual(_byte_text(1536), "1.50 KiB")
+        self.assertEqual(_byte_text(2.5 * 1024**3), "2.50 GiB")
 
     def test_controller_streams_selected_subtree_with_relative_paths(self) -> None:
         ensure_root_item("root")
