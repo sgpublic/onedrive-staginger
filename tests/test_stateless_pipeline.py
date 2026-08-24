@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import base64
 from collections import deque
-from datetime import UTC, datetime
 import hashlib
 import os
 from pathlib import Path
@@ -102,7 +101,7 @@ class StatelessPipelineTests(unittest.TestCase):
 
     def test_verification_skips_hash_when_size_and_remote_mtime_match(self) -> None:
         data = b"verified"
-        remote_mtime = datetime(2026, 8, 24, 12, 0, tzinfo=UTC)
+        remote_mtime = "2026-08-24T12:00:00Z"
         item = self._hashed_item(data, remote_mtime)
         path = self.root / "file"
         path.write_bytes(data)
@@ -118,7 +117,7 @@ class StatelessPipelineTests(unittest.TestCase):
 
     def test_verification_sets_remote_mtime_only_after_hash_matches(self) -> None:
         data = b"verified"
-        remote_mtime = datetime(2026, 8, 24, 12, 0, tzinfo=UTC)
+        remote_mtime = "2026-08-24T12:00:00+00:00"
         item = self._hashed_item(data, remote_mtime)
         path = self.root / "file"
         path.write_bytes(data)
@@ -128,6 +127,9 @@ class StatelessPipelineTests(unittest.TestCase):
 
         self.assertTrue(verified)
         self.assertEqual(path.stat().st_mtime_ns, _remote_mtime_ns(remote_mtime))
+
+    def test_invalid_remote_mtime_falls_back_without_crashing(self) -> None:
+        self.assertIsNone(_remote_mtime_ns("not-a-time"))
 
     def test_controller_streams_selected_subtree_with_relative_paths(self) -> None:
         ensure_root_item("root")
@@ -193,7 +195,7 @@ class StatelessPipelineTests(unittest.TestCase):
         self.assertEqual(options["min-split-size"], str(1024 * 1024))
 
     @staticmethod
-    def _hashed_item(data: bytes, remote_mtime: datetime) -> OneDriveItem:
+    def _hashed_item(data: bytes, remote_mtime: str) -> OneDriveItem:
         return OneDriveItem.create(
             drive_item_id=f"item-{OneDriveItem.select().count()}",
             name="01.mkv",

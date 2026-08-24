@@ -213,12 +213,16 @@ def _metadata_error(item: OneDriveItem) -> str | None:
     return None
 
 
-def _remote_mtime_ns(value: datetime | None) -> int | None:
+def _remote_mtime_ns(value: str | None) -> int | None:
     if value is None:
         return None
-    if value.tzinfo is None:
-        value = value.replace(tzinfo=UTC)
-    utc_value = value.astimezone(UTC)
+    try:
+        parsed = datetime.fromisoformat(f"{value[:-1]}+00:00" if value.endswith("Z") else value)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    utc_value = parsed.astimezone(UTC)
     epoch = datetime(1970, 1, 1, tzinfo=UTC)
     delta = utc_value - epoch
     return (
