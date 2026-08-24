@@ -4,11 +4,14 @@ import asyncio
 import base64
 from collections import deque
 import hashlib
+from io import StringIO
 import os
 from pathlib import Path
 import tempfile
 import unittest
 from unittest.mock import patch
+
+from rich.console import Console
 
 from onedrive_staginger.config import SchedulerConfig
 from onedrive_staginger.aria2 import Aria2DownloadManager
@@ -25,7 +28,7 @@ from onedrive_staginger.database import (
 )
 from onedrive_staginger.pipeline import ManifestFile, MigrationController, MigrationWorker, Transfer, TransferStatus
 from onedrive_staginger.pipeline.migration import _remote_mtime_ns
-from onedrive_staginger.progress import _byte_text
+from onedrive_staginger.progress import TransferProgress, _byte_text
 from onedrive_staginger.task import MigrationTask
 from onedrive_staginger.utils.hashing import file_hash
 
@@ -306,6 +309,23 @@ class StatelessPipelineTests(unittest.TestCase):
         self.assertEqual(_byte_text(512), "512.00 B")
         self.assertEqual(_byte_text(1536), "1.50 KiB")
         self.assertEqual(_byte_text(2.5 * 1024**3), "2.50 GiB")
+
+    def test_long_path_is_ellipsized_before_progress_details(self) -> None:
+        console = Console(file=StringIO(), width=100, record=True)
+        progress = TransferProgress(console)
+        path = "nested/" * 20 + "movie.mkv"
+        progress._slots.add_task(
+            f"下载中：{path}", total=1024, completed=512, speed="50.0 MiB/s"
+        )
+
+        console.print(progress._slots)
+        output = console.export_text()
+
+        self.assertNotIn(path, output)
+        self.assertIn("…", output)
+        self.assertIn("50.0 MiB/s", output)
+        self.assertIn("0.5/1.0 kB", output)
+        self.assertEqual(output.count("\n"), 1)
 
     def test_controller_streams_selected_subtree_with_relative_paths(self) -> None:
         ensure_root_item("root")

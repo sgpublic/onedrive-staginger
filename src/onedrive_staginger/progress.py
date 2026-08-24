@@ -17,6 +17,7 @@ from rich.progress import (
     TextColumn,
     TimeRemainingColumn,
 )
+from rich.table import Column
 from rich.text import Text
 
 
@@ -30,15 +31,19 @@ class TwoDecimalDownloadColumn(ProgressColumn):
 class TransferProgress:
     """Render total network progress and one persistent row per transfer slot."""
 
-    def __init__(self) -> None:
-        self._console = Console(stderr=True)
+    def __init__(self, console: Console | None = None) -> None:
+        self._console = console or Console(stderr=True)
         self._slots = Progress(
-            TextColumn("{task.description}"),
-            BarColumn(),
-            DownloadColumn(),
-            TextColumn("{task.fields[speed]}"),
-            TimeRemainingColumn(),
+            TextColumn(
+                "{task.description}",
+                table_column=Column(ratio=1, no_wrap=True, overflow="ellipsis"),
+            ),
+            BarColumn(bar_width=30, table_column=Column(no_wrap=True)),
+            DownloadColumn(table_column=Column(no_wrap=True)),
+            TextColumn("{task.fields[speed]}", table_column=Column(no_wrap=True)),
+            TimeRemainingColumn(table_column=Column(no_wrap=True)),
             console=self._console,
+            expand=True,
         )
         self._total = Progress(
             TextColumn("总下载 {task.fields[files]}"),
