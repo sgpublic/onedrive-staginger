@@ -181,20 +181,29 @@ class MigrationWorker:
         error = _metadata_error(item)
         if error is not None:
             return False
+        logger.info("正在校验文件：%s", path)
         try:
             stat = await asyncio.to_thread(path.stat)
         except OSError:
+            logger.warning("无法读取待校验文件：%s", path)
             return False
         if stat.st_size != item.size:
+            logger.warning("文件大小不匹配：%s", path)
             return False
         remote_mtime_ns = _remote_mtime_ns(item.remote_mtime)
         if remote_mtime_ns is not None and stat.st_mtime_ns == remote_mtime_ns:
+            logger.info("文件大小和修改时间匹配，跳过哈希校验：%s", path)
             return True
+        logger.info("正在计算文件哈希：%s", path)
         digest = await asyncio.to_thread(file_hash, path, item.hash_type)
         if digest != item.hash:
+            logger.warning("文件哈希不匹配：%s", path)
             return False
         if remote_mtime_ns is not None:
             await asyncio.to_thread(os.utime, path, ns=(remote_mtime_ns, remote_mtime_ns))
+            logger.info("文件哈希校验通过，已修正修改时间：%s", path)
+        else:
+            logger.info("文件哈希校验通过：%s", path)
         return True
 
     @staticmethod
