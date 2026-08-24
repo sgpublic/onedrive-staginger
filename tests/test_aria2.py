@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import asyncio
+from io import BytesIO
+import os
+import tarfile
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import AsyncMock, sentinel, patch
 
-from onedrive_staginger.aria2 import Aria2Process
+from onedrive_staginger.aria2 import Aria2BinaryError, Aria2Process
 from onedrive_staginger.config.settings import Aria2Config
 
 
@@ -29,7 +32,7 @@ class Aria2ProcessTests(unittest.IsolatedAsyncioTestCase):
         self.temp_dir = tempfile.TemporaryDirectory()
         self.config_dir = Path(self.temp_dir.name)
         self.config = Aria2Config(
-            executable="aria2c-test", disk_cache=256 * 1024 * 1024, file_allocation="falloc"
+            disk_cache=256 * 1024 * 1024, file_allocation="falloc"
         )
 
     async def asyncTearDown(self) -> None:
@@ -39,11 +42,15 @@ class Aria2ProcessTests(unittest.IsolatedAsyncioTestCase):
         process = FakeProcess()
         manager = Aria2Process(self.config, self.config_dir)
 
-        with patch("onedrive_staginger.aria2.asyncio.create_subprocess_exec", return_value=process) as create:
+        with (
+            patch.object(manager, "_ensure_binary") as ensure_binary,
+            patch("onedrive_staginger.aria2.asyncio.create_subprocess_exec", return_value=process) as create,
+        ):
             await manager.start()
 
         args = create.await_args.args
-        self.assertEqual(args[0], "aria2c-test")
+        ensure_binary.assert_awaited_once()
+        self.assertEqual(args[0], str(manager.binary_path))
         self.assertIn("--enable-rpc=true", args)
         self.assertIn("--rpc-listen-all=false", args)
         self.assertTrue(any(arg.startswith("--rpc-listen-port=") for arg in args))
@@ -99,14 +106,54 @@ class Aria2ProcessTests(unittest.IsolatedAsyncioTestCase):
     async def test_propagates_start_failure_without_process(self) -> None:
         manager = Aria2Process(self.config, self.config_dir)
 
-        with patch(
-            "onedrive_staginger.aria2.asyncio.create_subprocess_exec",
-            side_effect=FileNotFoundError("aria2c-test"),
+        with (
+            patch.object(manager, "_ensure_binary"),
+            patch(
+                "onedrive_staginger.aria2.asyncio.create_subprocess_exec",
+                side_effect=FileNotFoundError("aria2c-test"),
+            ),
         ):
             with self.assertRaises(FileNotFoundError):
                 await manager.start()
 
         self.assertIsNone(manager._process)
+
+    async def test_downloads_static_binary_to_configuration_directory(self) -> None:
+        manager = Aria2Process(self.config, self.config_dir)
+        archive = _aria2_archive(b"aria2 binary")
+
+        with patch("onedrive_staginger.aria2.urlopen", return_value=BytesIO(archive)):
+            await manager._ensure_binary()
+
+        self.assertEqual(manager.binary_path.read_bytes(), b"aria2 binary")
+        self.assertTrue(manager.binary_path.stat().st_mode & os.X_OK)
+
+    async def test_reuses_existing_managed_binary(self) -> None:
+        manager = Aria2Process(self.config, self.config_dir)
+        manager.binary_path.parent.mkdir()
+        manager.binary_path.write_bytes(b"aria2 binary")
+
+        with patch("onedrive_staginger.aria2._install_binary") as install_binary:
+            await manager._ensure_binary()
+
+        install_binary.assert_not_called()
+        self.assertTrue(manager.binary_path.stat().st_mode & os.X_OK)
+
+    async def test_rejects_unsupported_platform_before_download(self) -> None:
+        manager = Aria2Process(self.config, self.config_dir)
+
+        with patch("onedrive_staginger.aria2.platform.system", return_value="Windows"):
+            with self.assertRaisesRegex(Aria2BinaryError, "Linux x86_64"):
+                await manager._ensure_binary()
+
+
+def _aria2_archive(binary: bytes) -> bytes:
+    buffer = BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w:gz") as archive:
+        metadata = tarfile.TarInfo("aria2-1.36.0-static-linux-amd64/aria2c")
+        metadata.size = len(binary)
+        archive.addfile(metadata, BytesIO(binary))
+    return buffer.getvalue()
 
 
 if __name__ == "__main__":

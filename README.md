@@ -12,7 +12,7 @@ OneDrive -> temp -> dist
 
 ## 使用
 
-项目通过 [Pixi](https://pixi.sh/) 管理 Python、aria2c 和全部依赖。先按 Pixi 官方文档安装 Pixi，再克隆本仓库：
+项目通过 [Pixi](https://pixi.sh/) 管理 Python 和全部依赖。下载命令首次运行时会将固定版本的 [Aria2-Pro-Core](https://github.com/P3TERX/Aria2-Pro-Core) 静态二进制下载到 `CONFIG_DIR/bin/aria2c`，后续强制使用该文件，不依赖系统或 conda 的 aria2c。先按 Pixi 官方文档安装 Pixi，再克隆本仓库：
 
 ```bash
 git clone https://github.com/sgpublic/onedrive-staginger.git

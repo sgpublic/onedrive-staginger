@@ -22,7 +22,6 @@ class AzureConfig:
 
 @dataclass(frozen=True, slots=True)
 class Aria2Config:
-    executable: str
     disk_cache: int = 16 * 1024 * 1024
     file_allocation: str = "prealloc"
 
@@ -90,7 +89,6 @@ class AppConfig:
                 client_id=_required_str(azure, "client_id"),
             ),
             aria2=Aria2Config(
-                executable=_required_str(aria2, "executable"),
                 disk_cache=_aria2_cache_bytes(aria2, "disk_cache", default="16M"),
                 file_allocation=_aria2_file_allocation(aria2),
             ),

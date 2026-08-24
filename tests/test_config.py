@@ -13,7 +13,7 @@ azure:
   tenant_id: tenant
   client_id: client
 aria2:
-  executable: aria2c
+  disk_cache: "16M"
 scheduler:
   max_downloads: 2
   max_moves: 1
@@ -77,13 +77,15 @@ class AppConfigTests(unittest.TestCase):
             AppConfig.initialize(self.config_dir)
 
     def test_rejects_invalid_aria2_cache_or_allocation_method(self) -> None:
-        self.path.write_text(VALID_CONFIG.replace("executable: aria2c", 'executable: aria2c\n  disk_cache: "1T"'), encoding="utf-8")
+        self.path.write_text(
+            VALID_CONFIG.replace('disk_cache: "16M"', 'disk_cache: "1T"'), encoding="utf-8"
+        )
 
         with self.assertRaisesRegex(ConfigError, "disk_cache"):
             AppConfig.initialize(self.config_dir)
 
         AppConfig._instance = None
-        self.path.write_text(VALID_CONFIG.replace("executable: aria2c", "executable: aria2c\n  file_allocation: invalid"), encoding="utf-8")
+        self.path.write_text(VALID_CONFIG.replace("aria2:\n", "aria2:\n  file_allocation: invalid\n"), encoding="utf-8")
 
         with self.assertRaisesRegex(ConfigError, "file_allocation"):
             AppConfig.initialize(self.config_dir)

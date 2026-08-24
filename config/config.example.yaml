@@ -4,7 +4,6 @@ azure:
   client_id: "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
 
 aria2:
-  executable: "aria2c"
   disk_cache: "16M"
   file_allocation: "prealloc"
 

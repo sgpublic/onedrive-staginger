@@ -5,8 +5,15 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass
 import logging
+import os
+import platform
 import secrets
 from pathlib import Path
+import shutil
+import tarfile
+import tempfile
+from urllib.error import URLError
+from urllib.request import urlopen
 
 import aiohttp
 from aioaria2 import Aria2HttpClient
@@ -19,6 +26,15 @@ from .utils.network import available_local_port
 
 
 logger = logging.getLogger(__name__)
+
+ARIA2_ARCHIVE_URL = (
+    "https://github.com/P3TERX/Aria2-Pro-Core/releases/download/1.36.0_2021.08.22/"
+    "aria2-1.36.0-static-linux-amd64.tar.gz"
+)
+
+
+class Aria2BinaryError(ValueError):
+    """The managed Aria2-Pro-Core binary could not be installed."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -44,13 +60,18 @@ class Aria2Process:
     def session_path(self) -> Path:
         return self._config_dir / "aria2.session"
 
+    @property
+    def binary_path(self) -> Path:
+        return self._config_dir / "bin" / "aria2c"
+
     async def start(self) -> None:
         """Start aria2c if it is not already running."""
         if self._process is not None:
             raise RuntimeError("aria2c process has already been started")
 
+        await self._ensure_binary()
         self._process = await asyncio.create_subprocess_exec(
-            self._config.executable,
+            str(self.binary_path),
             "--enable-rpc=true",
             "--rpc-listen-all=false",
             f"--rpc-listen-port={self._port}",
@@ -64,6 +85,19 @@ class Aria2Process:
             stderr=asyncio.subprocess.DEVNULL,
         )
         logger.info("aria2c 已启动")
+
+    async def _ensure_binary(self) -> None:
+        binary_path = self.binary_path
+        if binary_path.is_file():
+            await asyncio.to_thread(_make_executable, binary_path)
+            return
+        if platform.system() != "Linux" or platform.machine() not in {"x86_64", "AMD64"}:
+            raise Aria2BinaryError(
+                "Aria2-Pro-Core managed binary supports only Linux x86_64"
+            )
+        logger.info("正在下载 Aria2-Pro-Core：%s", ARIA2_ARCHIVE_URL)
+        await asyncio.to_thread(_install_binary, binary_path)
+        logger.info("Aria2-Pro-Core 已安装：%s", binary_path)
 
     def create_client(self, session: aiohttp.ClientSession) -> Aria2HttpClient:
         """Create an authenticated RPC client for the running local aria2c process."""
@@ -182,3 +216,35 @@ def _byte_value(value: object) -> int:
     if not isinstance(value, str) or not value.isdigit():
         return 0
     return int(value)
+
+
+def _install_binary(binary_path: Path) -> None:
+    binary_path.parent.mkdir(parents=True, exist_ok=True)
+    temporary_path: Path | None = None
+    try:
+        with urlopen(ARIA2_ARCHIVE_URL, timeout=60) as response:
+            with tarfile.open(fileobj=response, mode="r|gz") as archive:
+                for member in archive:
+                    member_path = Path(member.name)
+                    if not member.isfile() or member_path.name != "aria2c":
+                        continue
+                    source = archive.extractfile(member)
+                    if source is None:
+                        continue
+                    with tempfile.NamedTemporaryFile(dir=binary_path.parent, delete=False) as output:
+                        temporary_path = Path(output.name)
+                        shutil.copyfileobj(source, output)
+                    _make_executable(temporary_path)
+                    os.replace(temporary_path, binary_path)
+                    temporary_path = None
+                    return
+    except (OSError, tarfile.TarError, URLError) as error:
+        raise Aria2BinaryError(f"Unable to install Aria2-Pro-Core: {error}") from error
+    finally:
+        if temporary_path is not None:
+            temporary_path.unlink(missing_ok=True)
+    raise Aria2BinaryError("Aria2-Pro-Core archive does not contain aria2c")
+
+
+def _make_executable(path: Path) -> None:
+    path.chmod(path.stat().st_mode | 0o111)
