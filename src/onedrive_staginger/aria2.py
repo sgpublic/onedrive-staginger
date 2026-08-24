@@ -61,7 +61,7 @@ class Aria2Process:
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.DEVNULL,
         )
-        logger.info("Started aria2c")
+        logger.info("aria2c 已启动")
 
     def create_client(self, session: aiohttp.ClientSession) -> Aria2HttpClient:
         """Create an authenticated RPC client for the running local aria2c process."""
@@ -86,7 +86,7 @@ class Aria2Process:
             await self._process.wait()
         finally:
             self._process = None
-            logger.info("Stopped aria2c")
+            logger.info("aria2c 已停止")
 
     async def __aenter__(self) -> Aria2Process:
         await self.start()
@@ -120,9 +120,9 @@ class Aria2DownloadManager:
 
         output_path = self._task.temp_path(item.drive_item_id, item.name)
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        logger.info("Getting download URL: %s", relative_path)
+        logger.info("正在获取下载直链：%s", relative_path)
         download_url = await self._onedrive.get_download_url(self._drive_id, item.drive_item_id)
-        logger.info("Submitting download task to aria2: %s", relative_path)
+        logger.info("正在向 aria2 提交下载任务：%s", relative_path)
         if item.size is None:
             raise ValueError(f"OneDrive item {item.drive_item_id} has no size")
         gid = await self._client.addUri([download_url], self._options(output_path, item.size))

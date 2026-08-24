@@ -93,7 +93,7 @@ class MigrationWorker:
         if temp_path.exists():
             if await self._verify(item, temp_path):
                 transfer.status = TransferStatus.STAGED
-                logger.info("Verified staged download: %s", transfer.file.relative_path)
+                logger.info("已校验中转文件：%s", transfer.file.relative_path)
                 return transfer.status
             await asyncio.to_thread(temp_path.unlink)
 
@@ -102,7 +102,7 @@ class MigrationWorker:
 
     async def submit(self, transfer: Transfer) -> None:
         if transfer.resume:
-            logger.info("Resuming interrupted download: %s", transfer.file.relative_path)
+            logger.info("正在续传中断的下载：%s", transfer.file.relative_path)
             transfer.aria2_gid = await self._downloads.resume(
                 transfer.file.item, transfer.file.relative_path
             )
@@ -122,7 +122,7 @@ class MigrationWorker:
             return transfer.status
         if progress.status in {"error", "removed"}:
             return self._fail(transfer, progress.error or f"aria2 task {progress.status}")
-        logger.info("Download finished, verifying: %s", transfer.file.relative_path)
+        logger.info("下载完成，正在校验：%s", transfer.file.relative_path)
         return await self.check_download(transfer)
 
     async def check_download(self, transfer: Transfer) -> TransferStatus:
@@ -131,14 +131,14 @@ class MigrationWorker:
         if await self._verify(item, temp_path):
             transfer.downloaded_bytes = item.size or 0
             transfer.status = TransferStatus.STAGED
-            logger.info("Verified downloaded file: %s", transfer.file.relative_path)
+            logger.info("下载文件校验通过：%s", transfer.file.relative_path)
             return transfer.status
         if temp_path.exists():
             await asyncio.to_thread(temp_path.unlink)
         control_path = Path(f"{temp_path}.aria2")
         if control_path.exists():
             await asyncio.to_thread(control_path.unlink)
-        logger.warning("Downloaded file failed verification; retrying: %s", transfer.file.relative_path)
+        logger.warning("下载文件校验失败，正在重试：%s", transfer.file.relative_path)
         transfer.aria2_gid = None
         transfer.status = TransferStatus.PENDING
         return transfer.status
@@ -154,7 +154,7 @@ class MigrationWorker:
             return await self.reconcile(transfer)
 
         transfer.status = TransferStatus.MOVING
-        logger.info("Moving to final directory: %s", transfer.file.relative_path)
+        logger.info("正在搬运到最终目录：%s", transfer.file.relative_path)
         await asyncio.to_thread(final_path.parent.mkdir, parents=True, exist_ok=True)
         if partial_path.exists():
             await asyncio.to_thread(partial_path.unlink)
@@ -162,14 +162,14 @@ class MigrationWorker:
         if not await self._verify(item, partial_path):
             await asyncio.to_thread(partial_path.unlink)
             transfer.status = TransferStatus.STAGED
-            logger.warning("Moved file failed verification; retrying move: %s", transfer.file.relative_path)
+            logger.warning("搬运后文件校验失败，正在重试搬运：%s", transfer.file.relative_path)
             return transfer.status
 
-        logger.info("Move finished, atomically renaming: %s", transfer.file.relative_path)
+        logger.info("搬运完成，正在原子重命名：%s", transfer.file.relative_path)
         await asyncio.to_thread(os.replace, partial_path, final_path)
         await asyncio.to_thread(temp_path.unlink)
         transfer.status = TransferStatus.COMPLETE
-        logger.info("Transfer complete: %s", transfer.file.relative_path)
+        logger.info("传输完成：%s", transfer.file.relative_path)
         return transfer.status
 
     def _temp_path(self, item: OneDriveItem) -> Path:
@@ -201,7 +201,7 @@ class MigrationWorker:
     def _fail(transfer: Transfer, message: str) -> TransferStatus:
         transfer.status = TransferStatus.FAILED
         transfer.last_error = message
-        logger.error("Transfer failed for %s: %s", transfer.file.relative_path, message)
+        logger.error("传输失败：%s，原因：%s", transfer.file.relative_path, message)
         return transfer.status
 
 

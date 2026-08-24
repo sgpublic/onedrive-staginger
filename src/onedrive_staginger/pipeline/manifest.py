@@ -35,7 +35,7 @@ class ManifestPipeline:
         ensure_root_item(self._root_drive_item_id)
         set_manifest_state(ManifestState.ENUMERATING)
         cursor = get_value(DELTA_CURSOR_KEY)
-        logger.info("Synchronizing OneDrive manifest%s", " from saved cursor" if cursor else "")
+        logger.info("正在同步 OneDrive 清单%s", "（从已保存的游标继续）" if cursor else "")
         page_number = 0
         while True:
             page = await self._client.get_delta_page(
@@ -55,10 +55,10 @@ class ManifestPipeline:
                 ),
             )
             logger.info(
-                "Synced manifest page %d: %d item(s)%s",
+                "已同步清单第 %d 页：%d 个项目%s",
                 page_number,
                 len(page.items),
-                " (complete)" if page.next_link is None else "",
+                "（完成）" if page.next_link is None else "",
             )
             if page.next_link is None:
                 return

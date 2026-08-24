@@ -43,9 +43,9 @@ class MigrationController:
         self._download_ids: set[str] = set()
 
     async def run(self) -> None:
-        logger.info("Reading manifest subtree into memory: %s", self._task.remote_root_path)
+        logger.info("正在将清单子树读入内存：%s", self._task.remote_root_path)
         transfers = [Transfer(file) for file in self._iter_files()]
-        logger.info("Manifest scan complete: %d file(s)", len(transfers))
+        logger.info("清单扫描完成：%d 个文件", len(transfers))
         for transfer in transfers:
             status = await self._worker.reconcile(transfer)
             if status == TransferStatus.FAILED:
@@ -63,7 +63,7 @@ class MigrationController:
             transfer.file.item.size or 0 for transfer in queued if transfer.id in self._download_ids
         )
         logger.info(
-            "Prepared %d network download(s), %d byte(s) total",
+            "已准备 %d 个网络下载任务，共 %d 字节",
             len(self._download_ids),
             total_bytes,
         )

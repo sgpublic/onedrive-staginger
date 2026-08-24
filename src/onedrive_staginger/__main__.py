@@ -47,17 +47,17 @@ def main(args: list[str] | None = None) -> None:
         namespace = parse_args(args)
         if namespace.command == "login":
             account = asyncio.run(login(namespace.config_dir, notify=logger.info))
-            logger.info("OneDrive account saved: %s", account.drive_id)
+            logger.info("OneDrive 账户已保存：%s", account.drive_id)
             return
         if namespace.command == "sync":
             root = asyncio.run(sync(namespace.config_dir))
-            logger.info("Manifest synchronized: %s (%s)", root.id, root.name)
+            logger.info("清单同步完成：%s（%s）", root.id, root.name)
             return
         task = MigrationTask(namespace.temp_dir, namespace.dist_dir, namespace.remote_root_path)
         asyncio.run(download(namespace.config_dir, task))
     except (ConfigError, GraphApiError, ValueError) as error:
         raise SystemExit(f"Error: {error}") from error
-    logger.info("Download complete")
+    logger.info("下载完成")
 
 
 if __name__ == "__main__":

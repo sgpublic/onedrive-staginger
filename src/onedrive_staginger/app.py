@@ -63,7 +63,7 @@ async def login(config_dir: Path, *, notify: Callable[[str], None] = print) -> A
 
 async def sync(config_dir: Path) -> DriveItem:
     """Apply OneDrive delta pages to the persistent full-drive manifest."""
-    logger.info("Starting manifest synchronization")
+    logger.info("开始同步 OneDrive 清单")
     config = AppConfig.initialize(config_dir)
     account = AccountStore.load(config_dir)
     config_dir = config_dir.expanduser().resolve(strict=False)
@@ -94,7 +94,7 @@ async def sync(config_dir: Path) -> DriveItem:
 async def download(config_dir: Path, task: MigrationTask) -> None:
     """Download one completed static manifest subtree without enumerating OneDrive."""
     logger.info(
-        "Starting download: OneDrive %s -> temp %s -> dist %s",
+        "开始下载：OneDrive %s -> 中转目录 %s -> 最终目录 %s",
         task.remote_root_path,
         task.temp_dir,
         task.dist_dir,
