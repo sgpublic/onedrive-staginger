@@ -1,0 +1,15 @@
+# Copy to config.yaml in this directory, replace placeholder values, and restrict its permissions.
+azure:
+  tenant_id: "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+  client_id: "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+
+aria2:
+  executable: "aria2c"
+
+scheduler:
+  api_requests_per_second: 10
+  max_downloads: 2
+  max_moves: 1
+  connections_per_file: 8
+  disable_http2: true
+  poll_interval_seconds: 5

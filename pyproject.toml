@@ -1,0 +1,54 @@
+[project]
+authors = [{name = "Haven Madray", email = "sgpublic2002@gmail.com"}]
+dependencies = ["aioaria2>=1.3.7,<1.4", "aiohttp>=3.14,<4", "aiolimiter>=1.2,<2", "peewee>=3.18,<4", "PyYAML>=6,<7"]
+name = "onedrive-staginger"
+requires-python = ">= 3.12.0, < 3.13"
+version = "0.1.0"
+
+[build-system]
+build-backend = "hatchling.build"
+requires = ["hatchling"]
+
+[project.scripts]
+onedrive-staginger = "onedrive_staginger.__main__:main"
+
+[tool.pixi.workspace]
+channels = ["conda-forge"]
+platforms = ["linux-64"]
+
+[tool.pixi.pypi-dependencies]
+onedrive_staginger = { path = ".", editable = true }
+
+[tool.pixi.tasks]
+
+[tool.pixi.tasks.login]
+cmd = ["onedrive-staginger", "{{ config_dir }}", "login"]
+args = [{ arg = "config_dir", default = "./config" }]
+description = "Sign in to OneDrive with device-code authorization."
+
+[tool.pixi.tasks.sync]
+cmd = ["onedrive-staginger", "{{ config_dir }}", "sync"]
+args = [{ arg = "config_dir", default = "./config" }]
+description = "Apply OneDrive delta changes to the local manifest."
+
+[tool.pixi.tasks.download]
+cmd = [
+    "onedrive-staginger",
+    "{{ config_dir }}",
+    "download",
+  "{{ temp_dir }}",
+  "{{ dist_dir }}",
+  "{{ remote_root_path }}",
+]
+args = [
+  "temp_dir",
+  "dist_dir",
+  "remote_root_path",
+  { arg = "config_dir", default = "./config" },
+]
+description = "Download one static manifest subtree to local storage."
+
+[tool.pixi.dependencies]
+pixi-pycharm = ">=0.0.12,<1"
+python = ">=3.12.0,<3.13"
+aria2 = ">=1.37.0,<2"
