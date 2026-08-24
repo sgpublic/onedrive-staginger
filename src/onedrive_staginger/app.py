@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -23,6 +24,9 @@ from .onedrive import (
 )
 from .task import MigrationTask
 from .pipeline import ManifestPipeline, MigrationController, MigrationWorker, TransferScheduler
+
+
+logger = logging.getLogger(__name__)
 
 
 async def login(config_dir: Path, *, notify: Callable[[str], None] = print) -> Account:
@@ -58,6 +62,7 @@ async def login(config_dir: Path, *, notify: Callable[[str], None] = print) -> A
 
 async def sync(config_dir: Path) -> DriveItem:
     """Apply OneDrive delta pages to the persistent full-drive manifest."""
+    logger.info("Starting manifest synchronization")
     config = AppConfig.initialize(config_dir)
     account = AccountStore.load(config_dir)
     config_dir = config_dir.expanduser().resolve(strict=False)
@@ -87,6 +92,12 @@ async def sync(config_dir: Path) -> DriveItem:
 
 async def download(config_dir: Path, task: MigrationTask) -> None:
     """Download one completed static manifest subtree without enumerating OneDrive."""
+    logger.info(
+        "Starting download: OneDrive %s -> temp %s -> dist %s",
+        task.remote_root_path,
+        task.temp_dir,
+        task.dist_dir,
+    )
     config = AppConfig.initialize(config_dir)
     account = AccountStore.load(config_dir)
     config_dir = config_dir.expanduser().resolve(strict=False)
@@ -162,4 +173,3 @@ async def _wait_for_aria2(client: Aria2HttpClient) -> None:
             last_error = error
             await asyncio.sleep(0.1)
     raise ConfigError("aria2c did not start its RPC listener") from last_error
-

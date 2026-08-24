@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import secrets
 from pathlib import Path
 
@@ -14,6 +15,9 @@ from .database import OneDriveItem, TransferRecord, TransferStatus
 from .onedrive import OneDriveClient
 from .task import MigrationTask
 from .utils.network import available_local_port
+
+
+logger = logging.getLogger(__name__)
 
 
 class Aria2Process:
@@ -47,6 +51,7 @@ class Aria2Process:
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.DEVNULL,
         )
+        logger.info("Started aria2c")
 
     def create_client(self, session: aiohttp.ClientSession) -> Aria2HttpClient:
         """Create an authenticated RPC client for the running local aria2c process."""
@@ -71,6 +76,7 @@ class Aria2Process:
             await self._process.wait()
         finally:
             self._process = None
+            logger.info("Stopped aria2c")
 
     async def __aenter__(self) -> Aria2Process:
         await self.start()
@@ -107,6 +113,7 @@ class Aria2DownloadManager:
         download_url = await self._onedrive.get_download_url(self._drive_id, item.drive_item_id)
         gid = await self._client.addUri([download_url], self._options(output_path))
         _set_transfer_downloading(item.drive_item_id, gid)
+        logger.info("Download submitted: %s", item.relative_path)
         return gid
 
     async def resume(self, item: OneDriveItem) -> str:
@@ -129,12 +136,14 @@ class Aria2DownloadManager:
             _set_transfer_downloading(transfer.drive_item_id, transfer.aria2_gid)
         elif status == "complete":
             _set_transfer_status(transfer.drive_item_id, TransferStatus.CHECKING)
+            logger.info("Download finished, verifying: %s", transfer.drive_item_id)
         elif status in {"error", "removed"}:
             message = response.get("errorMessage") or f"aria2 task {status}"
             code = response.get("errorCode")
             if code:
                 message = f"aria2 error {code}: {message}"
             _set_transfer_status(transfer.drive_item_id, TransferStatus.FAILED, str(message))
+            logger.error("Download failed for %s: %s", transfer.drive_item_id, message)
         else:
             raise ValueError(f"aria2 returned unknown status '{status}'")
         return status
@@ -174,4 +183,3 @@ def _update_transfer(drive_item_id: str, **values: str | None) -> None:
     )
     if updated != 1:
         raise ValueError(f"Transfer record does not exist for {drive_item_id}")
-

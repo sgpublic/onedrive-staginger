@@ -91,6 +91,17 @@ class ManifestPipelineTests(unittest.TestCase):
         self.assertEqual(client.cursors, ["saved-cursor"])
         self.assertEqual(get_value(DELTA_CURSOR_KEY), "new-cursor")
 
+    def test_logs_page_progress(self) -> None:
+        client = FakeOneDriveClient(
+            [DeltaPage(items=(), next_link=None, delta_link="new-cursor")]
+        )
+
+        with self.assertLogs("onedrive_staginger.pipeline.manifest", level="INFO") as logs:
+            asyncio.run(ManifestPipeline(client, "drive", "root").run())
+
+        self.assertIn("Synchronizing OneDrive manifest", logs.output[0])
+        self.assertIn("Synced manifest page 1: 0 item(s), 0 path(s) resolved (complete)", logs.output[1])
+
     def test_marks_manifest_enumerating_before_request_failure(self) -> None:
         class FailingOneDriveClient:
             async def get_delta_page(self, *_: object) -> DeltaPage:

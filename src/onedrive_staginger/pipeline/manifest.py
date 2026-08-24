@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+
 from ..database import (
     DELTA_CURSOR_KEY,
     ManifestState,
@@ -12,6 +14,9 @@ from ..database import (
     set_manifest_state,
 )
 from ..onedrive import DriveItem, OneDriveClient
+
+
+logger = logging.getLogger(__name__)
 
 
 class ManifestPipeline:
@@ -31,6 +36,8 @@ class ManifestPipeline:
         ensure_root_item(self._root_drive_item_id)
         set_manifest_state(ManifestState.ENUMERATING)
         cursor = get_value(DELTA_CURSOR_KEY)
+        logger.info("Synchronizing OneDrive manifest%s", " from saved cursor" if cursor else "")
+        page_number = 0
         while True:
             page = await self._client.get_delta_page(
                 self._drive_id,
@@ -40,6 +47,7 @@ class ManifestPipeline:
             next_cursor = page.next_link or page.delta_link
             if next_cursor is None:
                 raise RuntimeError("Graph delta response has neither nextLink nor deltaLink")
+            page_number += 1
             persist_delta_page(
                 (self._to_row(item) for item in page.items),
                 next_cursor,
@@ -47,7 +55,14 @@ class ManifestPipeline:
                     ManifestState.ENUMERATING if page.next_link else ManifestState.COMPLETE
                 ),
             )
-            resolve_relative_paths(self._root_drive_item_id)
+            resolved_paths = resolve_relative_paths(self._root_drive_item_id)
+            logger.info(
+                "Synced manifest page %d: %d item(s), %d path(s) resolved%s",
+                page_number,
+                len(page.items),
+                resolved_paths,
+                " (complete)" if page.next_link is None else "",
+            )
             if page.next_link is None:
                 return
             cursor = page.next_link

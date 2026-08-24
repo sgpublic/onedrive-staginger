@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import shutil
 from dataclasses import dataclass
@@ -12,6 +13,9 @@ from ..aria2 import Aria2DownloadManager
 from ..database import OneDriveItem, TransferRecord, TransferStatus
 from ..task import MigrationTask
 from ..utils.hashing import file_hash
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -57,6 +61,7 @@ class MigrationWorker:
 
         control_path = Path(f"{temp_path}.aria2")
         if temp_path.exists() and control_path.exists():
+            logger.info("Resuming interrupted download: %s", item.relative_path)
             await self._downloads.resume(item)
             return TransferStatus.DOWNLOADING
 
@@ -64,6 +69,7 @@ class MigrationWorker:
             verification = await self._verify(item, transfer, temp_path)
             if verification is not None:
                 _set_transfer(item.drive_item_id, TransferStatus.STAGED, verification=verification)
+                logger.info("Verified staged download: %s", item.relative_path)
                 return TransferStatus.STAGED
             await asyncio.to_thread(temp_path.unlink)
             if control_path.exists():
@@ -82,6 +88,7 @@ class MigrationWorker:
         verification = await self._verify(item, transfer, temp_path) if temp_path.exists() else None
         if verification is not None:
             _set_transfer(item.drive_item_id, TransferStatus.STAGED, verification=verification)
+            logger.info("Verified downloaded file: %s", item.relative_path)
             return TransferStatus.STAGED
 
         if temp_path.exists():
@@ -90,6 +97,7 @@ class MigrationWorker:
         if control_path.exists():
             await asyncio.to_thread(control_path.unlink)
         _set_transfer(item.drive_item_id, TransferStatus.PENDING, aria2_gid=None)
+        logger.warning("Downloaded file failed verification; retrying: %s", item.relative_path)
         return TransferStatus.PENDING
 
     async def move(self, item: OneDriveItem, transfer: TransferRecord) -> TransferStatus:
@@ -102,6 +110,7 @@ class MigrationWorker:
             return await self.reconcile(item, transfer)
 
         _set_transfer(item.drive_item_id, TransferStatus.MOVING)
+        logger.info("Moving to final directory: %s", item.relative_path)
         await asyncio.to_thread(final_path.parent.mkdir, parents=True, exist_ok=True)
         if partial_path.exists():
             await asyncio.to_thread(partial_path.unlink)
@@ -110,11 +119,13 @@ class MigrationWorker:
         if verification is None:
             await asyncio.to_thread(partial_path.unlink)
             _set_transfer(item.drive_item_id, TransferStatus.STAGED, verification=source_verification)
+            logger.warning("Moved file failed verification; retrying move: %s", item.relative_path)
             return TransferStatus.STAGED
 
         await asyncio.to_thread(os.replace, partial_path, final_path)
         await asyncio.to_thread(temp_path.unlink)
         _set_transfer(item.drive_item_id, TransferStatus.COMPLETE, verification=verification)
+        logger.info("Transfer complete: %s", item.relative_path)
         return TransferStatus.COMPLETE
 
     async def _verify(

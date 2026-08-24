@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import logging
+from collections import Counter
 
 from ..config import SchedulerConfig
 from ..database import (
@@ -14,6 +16,9 @@ from ..database import (
 )
 from .migration import MigrationWorker
 from .scheduler import TransferScheduler
+
+
+logger = logging.getLogger(__name__)
 
 
 class MigrationError(ValueError):
@@ -34,6 +39,7 @@ class MigrationController:
         self._scheduler = scheduler
         self._poll_interval = config.poll_interval_seconds
         self._manifest_root = manifest_root
+        self._last_progress: tuple[tuple[str, int], ...] | None = None
 
     async def run(self) -> None:
         """Run until every published transfer completes or terminal failures remain."""
@@ -44,6 +50,7 @@ class MigrationController:
             await self._check_downloads()
             await self._move_staged()
             await self._submit_pending()
+            self._log_progress()
 
             if self._manifest_is_complete():
                 self._raise_failures_if_idle()
@@ -60,6 +67,16 @@ class MigrationController:
                     return
 
             await asyncio.sleep(self._poll_interval)
+
+    def _log_progress(self) -> None:
+        transfers = get_transfer_items(relative_root=self._manifest_root)
+        counts = Counter(transfer.status for _, transfer in transfers)
+        progress = tuple(sorted(counts.items()))
+        if progress == self._last_progress:
+            return
+        self._last_progress = progress
+        summary = ", ".join(f"{status}={count}" for status, count in progress) or "no files"
+        logger.info("Transfer progress: %s", summary)
 
     async def _reconcile_all(self) -> None:
         for item, transfer in get_transfer_items(relative_root=self._manifest_root):

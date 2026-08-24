@@ -111,8 +111,10 @@ class Aria2DownloadManagerTests(unittest.IsolatedAsyncioTestCase):
         }
         transfer = TransferRecord.get(TransferRecord.drive_item_id == "item-1")
 
-        await self.manager.poll(transfer)
+        with self.assertLogs("onedrive_staginger.aria2", level="ERROR") as logs:
+            await self.manager.poll(transfer)
 
         updated = TransferRecord.get(TransferRecord.drive_item_id == "item-1")
         self.assertEqual(updated.status, TransferStatus.FAILED.value)
         self.assertEqual(updated.last_error, "aria2 error 3: Resource not found")
+        self.assertIn("Download failed for item-1", logs.output[0])

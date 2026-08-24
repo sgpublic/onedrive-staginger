@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import logging
 from pathlib import Path
 
 from .app import download, login, sync
@@ -11,6 +12,9 @@ from .config import ConfigError
 from .guides import AZURE_CLIENT_GUIDE
 from .onedrive import GraphApiError
 from .task import MigrationTask
+
+
+logger = logging.getLogger(__name__)
 
 
 def parse_args(args: list[str] | None = None) -> argparse.Namespace:
@@ -34,21 +38,26 @@ def parse_args(args: list[str] | None = None) -> argparse.Namespace:
 
 
 def main(args: list[str] | None = None) -> None:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(message)s",
+        datefmt="%H:%M:%S",
+    )
     try:
         namespace = parse_args(args)
         if namespace.command == "login":
-            account = asyncio.run(login(namespace.config_dir))
-            print(f"OneDrive account saved: {account.drive_id}")
+            account = asyncio.run(login(namespace.config_dir, notify=logger.info))
+            logger.info("OneDrive account saved: %s", account.drive_id)
             return
         if namespace.command == "sync":
             root = asyncio.run(sync(namespace.config_dir))
-            print(f"Manifest synchronized: {root.id} ({root.name})")
+            logger.info("Manifest synchronized: %s (%s)", root.id, root.name)
             return
         task = MigrationTask(namespace.temp_dir, namespace.dist_dir, namespace.remote_root_path)
         asyncio.run(download(namespace.config_dir, task))
     except (ConfigError, GraphApiError, ValueError) as error:
         raise SystemExit(f"Error: {error}") from error
-    print("Download complete")
+    logger.info("Download complete")
 
 
 if __name__ == "__main__":
