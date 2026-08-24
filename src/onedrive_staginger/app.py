@@ -24,6 +24,7 @@ from .onedrive import (
 )
 from .task import MigrationTask
 from .pipeline import ManifestPipeline, MigrationController, MigrationWorker
+from .progress import TransferProgress
 
 
 logger = logging.getLogger(__name__)
@@ -109,24 +110,25 @@ async def download(config_dir: Path, task: MigrationTask) -> None:
         async def save_refreshed_account(refreshed_account: Account) -> None:
             AccountStore.save(config_dir, refreshed_account)
 
-        async with aiohttp.ClientSession() as session:
-            client = OneDriveClient(
-                session,
-                account,
-                tenant_id=config.azure.tenant_id,
-                client_id=config.azure.client_id,
-                on_account_refreshed=save_refreshed_account,
-                api_requests_per_second=config.scheduler.api_requests_per_second,
-            )
-            async with Aria2Process(config.aria2, config_dir) as process:
-                aria2_client = process.create_client(session)
-                await _wait_for_aria2(aria2_client)
-                downloads = Aria2DownloadManager(
-                    aria2_client, client, account.drive_id, task, config.scheduler
+        with TransferProgress() as progress:
+            async with aiohttp.ClientSession() as session:
+                client = OneDriveClient(
+                    session,
+                    account,
+                    tenant_id=config.azure.tenant_id,
+                    client_id=config.azure.client_id,
+                    on_account_refreshed=save_refreshed_account,
+                    api_requests_per_second=config.scheduler.api_requests_per_second,
                 )
-                worker = MigrationWorker(task, downloads)
-                controller = MigrationController(worker, config.scheduler, task)
-                await controller.run()
+                async with Aria2Process(config.aria2, config_dir) as process:
+                    aria2_client = process.create_client(session)
+                    await _wait_for_aria2(aria2_client)
+                    downloads = Aria2DownloadManager(
+                        aria2_client, client, account.drive_id, task, config.scheduler
+                    )
+                    worker = MigrationWorker(task, downloads)
+                    controller = MigrationController(worker, config.scheduler, task, progress)
+                    await controller.run()
     finally:
         if not database.is_closed():
             database.close()

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import dataclass
 import logging
 import secrets
 from pathlib import Path
@@ -18,6 +19,14 @@ from .utils.network import available_local_port
 
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True, slots=True)
+class Aria2Status:
+    status: str
+    completed_bytes: int
+    total_bytes: int
+    error: str | None = None
 
 
 class Aria2Process:
@@ -87,7 +96,7 @@ class Aria2Process:
 
 
 class Aria2DownloadManager:
-    """Submit and monitor one-file aria2 downloads backed by SQLite state."""
+    """Submit and monitor one-file aria2 downloads using transient state."""
 
     def __init__(
         self,
@@ -110,32 +119,38 @@ class Aria2DownloadManager:
 
         output_path = self._task.temp_path(item.drive_item_id, item.name)
         output_path.parent.mkdir(parents=True, exist_ok=True)
+        logger.info("Getting download URL: %s", relative_path)
         download_url = await self._onedrive.get_download_url(self._drive_id, item.drive_item_id)
+        logger.info("Submitting download task to aria2: %s", relative_path)
         gid = await self._client.addUri([download_url], self._options(output_path))
-        logger.info("Download submitted: %s", relative_path)
         return gid
 
     async def resume(self, item: OneDriveItem, relative_path: str) -> str:
         """Resume an interrupted file using a newly issued Graph download URL."""
         return await self.submit(item, relative_path)
 
-    async def poll(self, gid: str) -> tuple[str, str | None]:
+    async def poll(self, gid: str) -> Aria2Status:
         """Return aria2's status without persisting transfer state."""
-        response = await self._client.tellStatus(gid, ["status", "errorCode", "errorMessage"])
+        response = await self._client.tellStatus(
+            gid,
+            ["status", "completedLength", "totalLength", "errorCode", "errorMessage"],
+        )
         if not isinstance(response, dict) or not isinstance(response.get("status"), str):
-            raise ValueError(f"aria2 returned an invalid status for {transfer.aria2_gid}")
+            raise ValueError(f"aria2 returned an invalid status for {gid}")
 
         status = response["status"]
+        completed = _byte_value(response.get("completedLength"))
+        total = _byte_value(response.get("totalLength"))
         if status in {"active", "waiting", "paused"}:
-            return status, None
+            return Aria2Status(status, completed, total)
         elif status == "complete":
-            return status, None
+            return Aria2Status(status, completed, total)
         elif status in {"error", "removed"}:
             message = response.get("errorMessage") or f"aria2 task {status}"
             code = response.get("errorCode")
             if code:
                 message = f"aria2 error {code}: {message}"
-            return status, str(message)
+            return Aria2Status(status, completed, total, str(message))
         else:
             raise ValueError(f"aria2 returned unknown status '{status}'")
 
@@ -149,3 +164,9 @@ class Aria2DownloadManager:
         if self._scheduler.disable_http2:
             options["enable-http2"] = "false"
         return options
+
+
+def _byte_value(value: object) -> int:
+    if not isinstance(value, str) or not value.isdigit():
+        return 0
+    return int(value)

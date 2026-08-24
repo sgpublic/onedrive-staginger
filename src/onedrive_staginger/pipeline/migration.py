@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum
 import logging
 import os
 from pathlib import Path
-import shutil
 
 from ..aria2 import Aria2DownloadManager
 from ..database import OneDriveItem
@@ -40,6 +40,12 @@ class Transfer:
     status: TransferStatus = TransferStatus.PENDING
     aria2_gid: str | None = None
     last_error: str | None = None
+    resume: bool = False
+    downloaded_bytes: int = 0
+
+    @property
+    def id(self) -> str:
+        return self.file.item.drive_item_id
 
 
 class MigrationWorker:
@@ -76,9 +82,9 @@ class MigrationWorker:
 
         control_path = Path(f"{temp_path}.aria2")
         if temp_path.exists() and control_path.exists():
-            logger.info("Resuming interrupted download: %s", transfer.file.relative_path)
-            transfer.aria2_gid = await self._downloads.resume(item, transfer.file.relative_path)
-            transfer.status = TransferStatus.DOWNLOADING
+            transfer.resume = True
+            transfer.downloaded_bytes = temp_path.stat().st_size
+            transfer.status = TransferStatus.PENDING
             return transfer.status
 
         if temp_path.exists():
@@ -92,19 +98,26 @@ class MigrationWorker:
         return transfer.status
 
     async def submit(self, transfer: Transfer) -> None:
-        transfer.aria2_gid = await self._downloads.submit(
-            transfer.file.item, transfer.file.relative_path
-        )
+        if transfer.resume:
+            logger.info("Resuming interrupted download: %s", transfer.file.relative_path)
+            transfer.aria2_gid = await self._downloads.resume(
+                transfer.file.item, transfer.file.relative_path
+            )
+        else:
+            transfer.aria2_gid = await self._downloads.submit(
+                transfer.file.item, transfer.file.relative_path
+            )
         transfer.status = TransferStatus.DOWNLOADING
 
     async def poll(self, transfer: Transfer) -> TransferStatus:
         if transfer.aria2_gid is None:
             return self._fail(transfer, "Download has no aria2 GID")
-        status, error = await self._downloads.poll(transfer.aria2_gid)
-        if status in {"active", "waiting", "paused"}:
+        progress = await self._downloads.poll(transfer.aria2_gid)
+        transfer.downloaded_bytes = progress.completed_bytes
+        if progress.status in {"active", "waiting", "paused"}:
             return transfer.status
-        if status in {"error", "removed"}:
-            return self._fail(transfer, error or f"aria2 task {status}")
+        if progress.status in {"error", "removed"}:
+            return self._fail(transfer, progress.error or f"aria2 task {progress.status}")
         logger.info("Download finished, verifying: %s", transfer.file.relative_path)
         return await self.check_download(transfer)
 
@@ -112,6 +125,7 @@ class MigrationWorker:
         item = transfer.file.item
         temp_path = self._temp_path(item)
         if await self._verify(item, temp_path):
+            transfer.downloaded_bytes = item.size or 0
             transfer.status = TransferStatus.STAGED
             logger.info("Verified downloaded file: %s", transfer.file.relative_path)
             return transfer.status
@@ -125,7 +139,9 @@ class MigrationWorker:
         transfer.status = TransferStatus.PENDING
         return transfer.status
 
-    async def move(self, transfer: Transfer) -> TransferStatus:
+    async def move(
+        self, transfer: Transfer, on_progress: Callable[[int], None] | None = None
+    ) -> TransferStatus:
         item = transfer.file.item
         temp_path = self._temp_path(item)
         final_path = self._task.dist_path(transfer.file.relative_path)
@@ -138,13 +154,14 @@ class MigrationWorker:
         await asyncio.to_thread(final_path.parent.mkdir, parents=True, exist_ok=True)
         if partial_path.exists():
             await asyncio.to_thread(partial_path.unlink)
-        await asyncio.to_thread(shutil.copyfile, temp_path, partial_path)
+        await asyncio.to_thread(_copy_file, temp_path, partial_path, on_progress)
         if not await self._verify(item, partial_path):
             await asyncio.to_thread(partial_path.unlink)
             transfer.status = TransferStatus.STAGED
             logger.warning("Moved file failed verification; retrying move: %s", transfer.file.relative_path)
             return transfer.status
 
+        logger.info("Move finished, atomically renaming: %s", transfer.file.relative_path)
         await asyncio.to_thread(os.replace, partial_path, final_path)
         await asyncio.to_thread(temp_path.unlink)
         transfer.status = TransferStatus.COMPLETE
@@ -183,3 +200,13 @@ def _metadata_error(item: OneDriveItem) -> str | None:
     if item.hash_type not in {"sha1", "sha256", "quickXorHash"} or item.hash is None:
         return "OneDrive item has no supported hash metadata"
     return None
+
+
+def _copy_file(source: Path, destination: Path, on_progress: Callable[[int], None] | None) -> None:
+    copied = 0
+    with source.open("rb") as input_file, destination.open("wb") as output_file:
+        while chunk := input_file.read(1024 * 1024):
+            output_file.write(chunk)
+            copied += len(chunk)
+            if on_progress is not None:
+                on_progress(copied)

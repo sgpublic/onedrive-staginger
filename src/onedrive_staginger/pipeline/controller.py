@@ -1,4 +1,4 @@
-"""Stream one manifest subtree while respecting download backpressure."""
+"""Pre-scan one manifest subtree and execute bounded transfer slots."""
 
 from __future__ import annotations
 
@@ -9,6 +9,7 @@ import logging
 
 from ..config import SchedulerConfig
 from ..database import get_manifest_child, get_manifest_root_id, iter_manifest_children
+from ..progress import TransferProgress
 from ..task import MigrationTask
 from .migration import ManifestFile, MigrationWorker, Transfer, TransferStatus
 
@@ -21,45 +22,67 @@ class MigrationError(ValueError):
 
 
 class MigrationController:
-    """Stream manifest files only while an aria2 download slot is available."""
+    """Hold each bounded transfer slot until its final rename has completed."""
 
-    def __init__(self, worker: MigrationWorker, config: SchedulerConfig, task: MigrationTask) -> None:
+    def __init__(
+        self,
+        worker: MigrationWorker,
+        config: SchedulerConfig,
+        task: MigrationTask,
+        progress: TransferProgress | None = None,
+    ) -> None:
         self._worker = worker
-        self._max_downloads = config.max_downloads
+        self._max_slots = config.max_downloads
         self._max_moves = config.max_moves
         self._poll_interval = config.poll_interval_seconds
         self._task = task
-        self._active: list[Transfer] = []
-        self._staged: deque[Transfer] = deque()
+        self._progress = progress
+        self._slots: dict[str, Transfer] = {}
         self._moves: dict[asyncio.Task[TransferStatus], Transfer] = {}
         self._failures: list[Transfer] = []
-        self._blocked_logged = False
+        self._download_ids: set[str] = set()
 
     async def run(self) -> None:
-        files = self._iter_files()
-        exhausted = False
-        while True:
-            await self._poll_downloads()
+        logger.info("Reading manifest subtree into memory: %s", self._task.remote_root_path)
+        transfers = [Transfer(file) for file in self._iter_files()]
+        logger.info("Manifest scan complete: %d file(s)", len(transfers))
+        for transfer in transfers:
+            status = await self._worker.reconcile(transfer)
+            if status == TransferStatus.FAILED:
+                self._failures.append(transfer)
+
+        queued = deque(
+            transfer
+            for transfer in transfers
+            if transfer.status not in {TransferStatus.COMPLETE, TransferStatus.FAILED}
+        )
+        self._download_ids = {
+            transfer.id for transfer in queued if transfer.status == TransferStatus.PENDING
+        }
+        total_bytes = sum(
+            transfer.file.item.size or 0 for transfer in queued if transfer.id in self._download_ids
+        )
+        logger.info(
+            "Prepared %d network download(s), %d byte(s) total",
+            len(self._download_ids),
+            total_bytes,
+        )
+        if self._progress is not None:
+            self._progress.start(total_bytes, len(self._download_ids))
+
+        while queued or self._slots:
             await self._collect_moves()
+            await self._poll_downloads()
             self._start_moves()
-
-            if not exhausted:
-                exhausted = await self._fill_download_slots(files)
-
-            if exhausted and not self._active and not self._staged and not self._moves:
-                self._raise_failures()
-                return
-
-            if len(self._active) >= self._max_downloads and not self._blocked_logged:
-                logger.info("Download slots full; pausing manifest traversal")
-                self._blocked_logged = True
-            if self._active or self._moves:
+            await self._fill_slots(queued)
+            if self._slots:
                 await asyncio.sleep(self._poll_interval)
+
+        self._raise_failures()
 
     def _iter_files(self) -> Iterator[ManifestFile]:
         root_id = get_manifest_root_id()
-        root_path = self._task.remote_root_path.strip("/")
-        for component in filter(None, root_path.split("/")):
+        for component in filter(None, self._task.remote_root_path.strip("/").split("/")):
             child = get_manifest_child(root_id, component)
             if child is None or not child.is_folder:
                 raise ValueError(f"Remote manifest directory not found: {self._task.remote_root_path}")
@@ -76,63 +99,80 @@ class MigrationController:
             elif child.is_folder:
                 yield from self._walk(child.drive_item_id, relative_path)
 
-    async def _fill_download_slots(self, files: Iterator[ManifestFile]) -> bool:
-        while len(self._active) < self._max_downloads:
-            try:
-                transfer = Transfer(next(files))
-            except StopIteration:
-                return True
-            status = await self._worker.reconcile(transfer)
-            if status == TransferStatus.COMPLETE:
-                continue
-            if status == TransferStatus.FAILED:
-                self._failures.append(transfer)
-                continue
-            if status == TransferStatus.STAGED:
-                self._staged.append(transfer)
-                self._start_moves()
-                continue
-            if status == TransferStatus.PENDING:
+    async def _fill_slots(self, queued: deque[Transfer]) -> None:
+        while queued and len(self._slots) < self._max_slots:
+            transfer = queued.popleft()
+            self._slots[transfer.id] = transfer
+            counts_download = transfer.id in self._download_ids
+            if self._progress is not None:
+                self._progress.start_slot(
+                    transfer.id,
+                    f"准备传输：{transfer.file.relative_path}",
+                    transfer.file.item.size or 0,
+                    transfer.downloaded_bytes,
+                    counts_download=counts_download,
+                )
+            if transfer.status == TransferStatus.PENDING:
                 await self._worker.submit(transfer)
-            self._active.append(transfer)
-            self._blocked_logged = False
-        return False
+            self._start_moves()
 
     async def _poll_downloads(self) -> None:
-        for transfer in list(self._active):
-            status = await self._worker.poll(transfer)
-            if status == TransferStatus.DOWNLOADING:
+        for transfer in list(self._slots.values()):
+            if transfer.status != TransferStatus.DOWNLOADING:
                 continue
-            self._active.remove(transfer)
-            self._blocked_logged = False
-            if status == TransferStatus.PENDING:
-                await self._worker.submit(transfer)
-                self._active.append(transfer)
-            elif status == TransferStatus.STAGED:
-                self._staged.append(transfer)
-            elif status == TransferStatus.FAILED:
-                self._failures.append(transfer)
-
-    def _start_moves(self) -> None:
-        while self._staged and len(self._moves) < self._max_moves:
-            transfer = self._staged.popleft()
-            self._moves[asyncio.create_task(self._worker.move(transfer))] = transfer
-
-    async def _collect_moves(self) -> None:
-        done = [task for task in self._moves if task.done()]
-        for task in done:
-            transfer = self._moves.pop(task)
-            status = await task
+            status = await self._worker.poll(transfer)
+            if self._progress is not None:
+                self._progress.update_download(
+                    transfer.id, transfer.downloaded_bytes, transfer.file.item.size or 0
+                )
             if status == TransferStatus.STAGED:
-                # A failed destination verification is retried without re-downloading.
-                self._staged.append(transfer)
+                self._start_moves()
             elif status == TransferStatus.PENDING:
                 await self._worker.submit(transfer)
-                self._active.append(transfer)
-            elif status == TransferStatus.DOWNLOADING:
-                self._active.append(transfer)
             elif status == TransferStatus.FAILED:
-                self._failures.append(transfer)
+                self._fail_slot(transfer)
+
+    def _start_moves(self) -> None:
+        for transfer in self._slots.values():
+            if len(self._moves) >= self._max_moves:
+                return
+            if transfer.status != TransferStatus.STAGED:
+                continue
+            if self._progress is not None:
+                self._progress.start_move(transfer.id, transfer.file.item.size or 0)
+                loop = asyncio.get_running_loop()
+                on_progress = lambda completed, transfer=transfer: loop.call_soon_threadsafe(
+                    self._progress.update_move, transfer.id, completed
+                )
+            else:
+                on_progress = None
+            self._moves[asyncio.create_task(self._worker.move(transfer, on_progress))] = transfer
+
+    async def _collect_moves(self) -> None:
+        for task in [task for task in self._moves if task.done()]:
+            transfer = self._moves.pop(task)
+            status = await task
+            if status == TransferStatus.COMPLETE:
+                self._complete_slot(transfer)
+            elif status == TransferStatus.STAGED:
+                continue
+            elif status == TransferStatus.PENDING:
+                await self._worker.submit(transfer)
+            elif status == TransferStatus.DOWNLOADING:
+                continue
+            else:
+                self._fail_slot(transfer)
+
+    def _complete_slot(self, transfer: Transfer) -> None:
+        self._slots.pop(transfer.id)
+        if self._progress is not None:
+            self._progress.finish_slot(transfer.id, counts_download=transfer.id in self._download_ids)
+
+    def _fail_slot(self, transfer: Transfer) -> None:
+        self._slots.pop(transfer.id, None)
+        self._failures.append(transfer)
+        if self._progress is not None:
+            self._progress.finish_slot(transfer.id, counts_download=False)
 
     def _raise_failures(self) -> None:
         if not self._failures:

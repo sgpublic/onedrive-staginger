@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+from collections import deque
 import hashlib
 from pathlib import Path
 import tempfile
@@ -116,19 +117,18 @@ class StatelessPipelineTests(unittest.TestCase):
 
         self.assertEqual([(file.item.drive_item_id, file.relative_path) for file in files], [("file", "Anime/01.mkv")])
 
-    def test_controller_stops_reading_when_download_slots_are_full(self) -> None:
+    def test_controller_limits_submitted_tasks_to_available_slots(self) -> None:
         worker = PendingWorker()
         task = MigrationTask(self.root / "temp", self.root / "dist", "/Media")
         controller = MigrationController(worker, SchedulerConfig(max_downloads=1), task)  # type: ignore[arg-type]
         first = OneDriveItem.create(drive_item_id="first", name="01.mkv", is_file=True)
         second = OneDriveItem.create(drive_item_id="second", name="02.mkv", is_file=True)
-        files = iter([ManifestFile(first, "01.mkv"), ManifestFile(second, "02.mkv")])
+        queued = deque([Transfer(ManifestFile(first, "01.mkv")), Transfer(ManifestFile(second, "02.mkv"))])
 
-        exhausted = asyncio.run(controller._fill_download_slots(files))
+        asyncio.run(controller._fill_slots(queued))
 
-        self.assertFalse(exhausted)
         self.assertEqual(worker.submitted, ["01.mkv"])
-        self.assertEqual(next(files).item.drive_item_id, "second")
+        self.assertEqual(queued[0].id, "second")
 
 
 if __name__ == "__main__":
