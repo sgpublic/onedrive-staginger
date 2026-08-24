@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+import re
 from typing import Any, ClassVar
 
 import yaml
@@ -30,7 +31,7 @@ class SchedulerConfig:
     max_downloads: int = 2
     max_moves: int = 1
     connections_per_file: int = 8
-    disable_http2: bool = True
+    min_split_size: str = "4M"
     poll_interval_seconds: int = 5
 
 
@@ -90,7 +91,7 @@ class AppConfig:
                 max_downloads=_positive_int(scheduler, "max_downloads"),
                 max_moves=_positive_int(scheduler, "max_moves"),
                 connections_per_file=_positive_int(scheduler, "connections_per_file"),
-                disable_http2=_required_bool(scheduler, "disable_http2"),
+                min_split_size=_aria2_size(scheduler, "min_split_size", default="4M"),
                 poll_interval_seconds=_positive_int(scheduler, "poll_interval_seconds"),
             ),
         )
@@ -110,15 +111,15 @@ def _required_str(value: dict[str, Any], key: str, *, allow_empty: bool = False)
     return item
 
 
-def _required_bool(value: dict[str, Any], key: str) -> bool:
-    item = value.get(key)
-    if not isinstance(item, bool):
-        raise ConfigError(f"Configuration field '{key}' must be a boolean")
-    return item
-
-
 def _positive_int(value: dict[str, Any], key: str, *, default: int | None = None) -> int:
     item = value.get(key, default)
     if isinstance(item, bool) or not isinstance(item, int) or item <= 0:
         raise ConfigError(f"Configuration field '{key}' must be a positive integer")
+    return item
+
+
+def _aria2_size(value: dict[str, Any], key: str, *, default: str) -> str:
+    item = value.get(key, default)
+    if not isinstance(item, str) or not re.fullmatch(r"[1-9][0-9]*[KMG]?", item):
+        raise ConfigError(f"Configuration field '{key}' must be an aria2 size such as '4M'")
     return item

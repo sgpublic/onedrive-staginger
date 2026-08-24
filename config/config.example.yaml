@@ -11,5 +11,5 @@ scheduler:
   max_downloads: 2
   max_moves: 1
   connections_per_file: 8
-  disable_http2: true
+  min_split_size: "4M"
   poll_interval_seconds: 1

@@ -9,6 +9,7 @@ import tempfile
 import unittest
 
 from onedrive_staginger.config import SchedulerConfig
+from onedrive_staginger.aria2 import Aria2DownloadManager
 from onedrive_staginger.database import (
     MANIFEST_ROOT_ID_KEY,
     OneDriveItem,
@@ -129,6 +130,16 @@ class StatelessPipelineTests(unittest.TestCase):
 
         self.assertEqual(worker.submitted, ["01.mkv"])
         self.assertEqual(queued[0].id, "second")
+
+    def test_aria2_options_include_configured_minimum_split_size(self) -> None:
+        task = MigrationTask(self.root / "temp", self.root / "dist", "/Media")
+        manager = Aria2DownloadManager(
+            None, None, "drive", task, SchedulerConfig(min_split_size="4M")  # type: ignore[arg-type]
+        )
+
+        options = manager._options(task.temp_path("item", "01.mkv"))
+
+        self.assertEqual(options["min-split-size"], "4M")
 
 
 if __name__ == "__main__":

@@ -162,9 +162,8 @@ class Aria2DownloadManager:
             "out": output_path.name,
             "split": str(self._scheduler.connections_per_file),
             "max-connection-per-server": str(self._scheduler.connections_per_file),
+            "min-split-size": self._scheduler.min_split_size,
         }
-        if self._scheduler.disable_http2:
-            options["enable-http2"] = "false"
         return options
 
 
