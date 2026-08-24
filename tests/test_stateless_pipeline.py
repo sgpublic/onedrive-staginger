@@ -215,6 +215,42 @@ class StatelessPipelineTests(unittest.TestCase):
         self.assertEqual(progress, [])
         file_hash_mock.assert_not_called()
 
+    def test_verified_download_is_not_checked_again_while_moving(self) -> None:
+        data = b"verified download"
+        item = self._hashed_item(data, "2026-08-24T12:00:00Z")
+        task = MigrationTask(self.root / "temp", self.root / "dist", "/Media")
+        temp_path = task.temp_path(item.drive_item_id, item.name)
+        temp_path.parent.mkdir(parents=True)
+        temp_path.write_bytes(data)
+        transfer = Transfer(ManifestFile(item, "01.mkv"), status=TransferStatus.DOWNLOADING)
+        worker = MigrationWorker(task, FakeDownloads())  # type: ignore[arg-type]
+
+        self.assertEqual(asyncio.run(worker.check_download(transfer)), TransferStatus.STAGED)
+        with patch.object(worker, "_verify", wraps=worker._verify) as verify_mock:
+            status = asyncio.run(worker.move(transfer))
+
+        self.assertEqual(status, TransferStatus.COMPLETE)
+        verify_mock.assert_not_awaited()
+        self.assertEqual(task.dist_path("01.mkv").read_bytes(), data)
+
+    def test_unverified_staged_file_is_checked_once_while_moving(self) -> None:
+        data = b"staged file"
+        item = self._hashed_item(data, "2026-08-24T12:00:00Z")
+        task = MigrationTask(self.root / "temp", self.root / "dist", "/Media")
+        temp_path = task.temp_path(item.drive_item_id, item.name)
+        temp_path.parent.mkdir(parents=True)
+        temp_path.write_bytes(data)
+        transfer = Transfer(ManifestFile(item, "01.mkv"), status=TransferStatus.STAGED)
+        worker = MigrationWorker(task, FakeDownloads())  # type: ignore[arg-type]
+
+        with patch.object(worker, "_verify", wraps=worker._verify) as verify_mock:
+            status = asyncio.run(worker.move(transfer))
+
+        self.assertEqual(status, TransferStatus.COMPLETE)
+        verify_mock.assert_awaited_once()
+        self.assertTrue(transfer.verified)
+        self.assertEqual(task.dist_path("01.mkv").read_bytes(), data)
+
     def test_file_hash_reports_each_chunk_for_all_supported_hashes(self) -> None:
         path = self.root / "file"
         path.write_bytes(b"abcdefgh")

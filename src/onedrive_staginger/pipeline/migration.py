@@ -43,6 +43,7 @@ class Transfer:
     aria2_gid: str | None = None
     last_error: str | None = None
     resume: bool = False
+    verified: bool = False
     downloaded_bytes: int = 0
     download_speed: int = 0
 
@@ -104,6 +105,7 @@ class MigrationWorker:
 
         if temp_path.exists():
             if await self._verify(item, temp_path, on_verify_start, on_verify_progress):
+                transfer.verified = True
                 transfer.status = TransferStatus.STAGED
                 logger.info("已校验中转文件：%s", transfer.file.relative_path)
                 return transfer.status
@@ -151,11 +153,13 @@ class MigrationWorker:
         item = transfer.file.item
         temp_path = self._temp_path(item)
         if self._fast_verify_after_download and await self._size_matches(item, temp_path):
+            transfer.verified = True
             transfer.downloaded_bytes = item.size or 0
             transfer.status = TransferStatus.STAGED
             logger.info("下载文件大小校验通过：%s", transfer.file.relative_path)
             return transfer.status
         if await self._verify(item, temp_path, on_verify_start, on_verify_progress):
+            transfer.verified = True
             transfer.downloaded_bytes = item.size or 0
             transfer.status = TransferStatus.STAGED
             logger.info("下载文件校验通过：%s", transfer.file.relative_path)
@@ -181,8 +185,10 @@ class MigrationWorker:
         temp_path = self._temp_path(item)
         final_path = self._task.dist_path(transfer.file.relative_path)
         partial_path = self._task.partial_path(final_path)
-        if not await self._verify(item, temp_path, on_verify_start, on_verify_progress):
-            return await self.reconcile(transfer, on_verify_start, on_verify_progress)
+        if not transfer.verified:
+            if not await self._verify(item, temp_path, on_verify_start, on_verify_progress):
+                return await self.reconcile(transfer, on_verify_start, on_verify_progress)
+            transfer.verified = True
 
         transfer.status = TransferStatus.MOVING
         logger.info("正在搬运到最终目录：%s", transfer.file.relative_path)
@@ -190,11 +196,6 @@ class MigrationWorker:
         if partial_path.exists():
             await asyncio.to_thread(partial_path.unlink)
         await asyncio.to_thread(_copy_file, temp_path, partial_path, on_progress)
-        if not await self._verify(item, partial_path, on_verify_start, on_verify_progress):
-            await asyncio.to_thread(partial_path.unlink)
-            transfer.status = TransferStatus.STAGED
-            logger.warning("搬运后文件校验失败，正在重试搬运：%s", transfer.file.relative_path)
-            return transfer.status
 
         logger.info("搬运完成，正在原子重命名：%s", transfer.file.relative_path)
         await asyncio.to_thread(os.replace, partial_path, final_path)
