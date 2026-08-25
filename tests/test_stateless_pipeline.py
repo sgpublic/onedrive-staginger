@@ -284,6 +284,12 @@ class StatelessPipelineTests(unittest.TestCase):
         self.assertEqual(progress, [])
         file_hash_mock.assert_not_called()
 
+        self.assertEqual(asyncio.run(worker.move(transfer)), TransferStatus.COMPLETE)
+        self.assertEqual(
+            task.dist_path("01.mkv").stat().st_mtime_ns,
+            _remote_mtime_ns("2026-08-24T12:00:00Z"),
+        )
+
     def test_verified_download_is_not_checked_again_while_moving(self) -> None:
         data = b"verified download"
         item = self._hashed_item(data, "2026-08-24T12:00:00Z")

@@ -196,6 +196,10 @@ class MigrationWorker:
         if partial_path.exists():
             await asyncio.to_thread(partial_path.unlink)
         await asyncio.to_thread(_copy_file, temp_path, partial_path, on_progress)
+        remote_mtime_ns = _remote_mtime_ns(item.remote_mtime)
+        if remote_mtime_ns is not None:
+            await asyncio.to_thread(os.utime, partial_path, ns=(remote_mtime_ns, remote_mtime_ns))
+            logger.info("搬运文件已设置远端修改时间：%s", transfer.file.relative_path)
 
         logger.info("搬运完成，正在原子重命名：%s", transfer.file.relative_path)
         await asyncio.to_thread(os.replace, partial_path, final_path)
