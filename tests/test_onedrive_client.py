@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import asyncio
 import unittest
 from datetime import UTC, datetime
 from typing import Any
+from unittest.mock import AsyncMock, patch
 
 from onedrive_staginger.config import Account
 from onedrive_staginger.onedrive import (
@@ -14,6 +16,7 @@ from onedrive_staginger.onedrive import (
     refresh_access_token,
     request_device_code,
 )
+from onedrive_staginger.onedrive.client import _download_url_retry_delay
 
 
 class FakeResponse:
@@ -166,6 +169,55 @@ class OneDriveClientTests(unittest.IsolatedAsyncioTestCase):
         url = await client.get_download_url("drive-1", "item-1")
 
         self.assertEqual(url, "https://download.test/file")
+
+    async def test_retries_download_url_timeouts_with_logged_backoff(self) -> None:
+        client, _ = self._client([])
+
+        with (
+            patch.object(
+                client,
+                "_get_json",
+                new=AsyncMock(
+                    side_effect=[asyncio.TimeoutError(), {"@microsoft.graph.downloadUrl": "https://download.test/file"}]
+                ),
+            ) as get_json,
+            patch("onedrive_staginger.onedrive.client.asyncio.sleep", new=AsyncMock()) as sleep,
+            self.assertLogs("onedrive_staginger.onedrive.client", level="WARNING") as logs,
+        ):
+            url = await client.get_download_url("drive-1", "item-1")
+
+        self.assertEqual(url, "https://download.test/file")
+        self.assertEqual(get_json.await_count, 2)
+        self.assertEqual(get_json.await_args.kwargs["timeout"].total, 60)
+        sleep.assert_awaited_once_with(1)
+        self.assertIn("文件 item-1，尝试 #1，原因 TimeoutError；1 秒后重试", logs.output[0])
+
+    async def test_retries_transient_graph_errors_but_not_permanent_ones(self) -> None:
+        client, _ = self._client([])
+        transient = GraphApiError(429, "tooManyRequests", "Slow down", None)
+
+        with self.assertLogs("onedrive_staginger.onedrive.client", level="WARNING"):
+            with (
+                patch.object(
+                    client,
+                    "_get_json",
+                    new=AsyncMock(
+                        side_effect=[transient, {"@microsoft.graph.downloadUrl": "https://download.test/file"}]
+                    ),
+                ),
+                patch("onedrive_staginger.onedrive.client.asyncio.sleep", new=AsyncMock()) as sleep,
+            ):
+                url = await client.get_download_url("drive-1", "item-1")
+
+        self.assertEqual(url, "https://download.test/file")
+        sleep.assert_awaited_once_with(1)
+
+        with patch.object(client, "_get_json", new=AsyncMock(side_effect=GraphApiError(404, None, "Missing", None))):
+            with self.assertRaisesRegex(GraphApiError, "Missing"):
+                await client.get_download_url("drive-1", "item-1")
+
+    def test_download_url_retry_delay_caps_at_five_minutes(self) -> None:
+        self.assertEqual([_download_url_retry_delay(attempt) for attempt in (1, 2, 9, 10)], [1, 2, 256, 300])
 
     async def test_gets_current_delegated_user_drive_id(self) -> None:
         session = FakeSession([FakeResponse(200, {"id": "b!drive-id"})])

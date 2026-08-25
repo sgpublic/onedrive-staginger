@@ -6,6 +6,7 @@ import asyncio
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
 import inspect
+import logging
 from typing import Any
 from urllib.parse import quote
 
@@ -28,7 +29,11 @@ ITEM_FIELDS = (
     "id,name,size,eTag,lastModifiedDateTime,parentReference,file,folder,deleted"
 )
 DELEGATED_SCOPES = "User.Read Files.Read offline_access"
+DOWNLOAD_URL_TIMEOUT_SECONDS = 60
+DOWNLOAD_URL_RETRY_MAX_SECONDS = 5 * 60
 AccountRefreshedCallback = Callable[[Account], Awaitable[None] | None]
+
+logger = logging.getLogger(__name__)
 
 
 async def request_device_code(
@@ -182,14 +187,34 @@ class OneDriveClient:
 
     async def get_download_url(self, drive_id: str, item_id: str) -> str:
         """Fetch a fresh, short-lived download URL for a file by ID."""
-        payload = await self._get_json(
-            self._item_url(drive_id, item_id),
-            params={"$select": "@microsoft.graph.downloadUrl"},
-        )
-        try:
-            return payload["@microsoft.graph.downloadUrl"]
-        except KeyError as error:
-            raise GraphApiError(200, None, "Item has no download URL", None) from error
+        attempt = 1
+        while True:
+            try:
+                payload = await self._get_json(
+                    self._item_url(drive_id, item_id),
+                    params={"$select": "@microsoft.graph.downloadUrl"},
+                    timeout=aiohttp.ClientTimeout(total=DOWNLOAD_URL_TIMEOUT_SECONDS),
+                )
+                try:
+                    return payload["@microsoft.graph.downloadUrl"]
+                except KeyError as error:
+                    raise GraphApiError(200, None, "Item has no download URL", None) from error
+            except (asyncio.TimeoutError, aiohttp.ClientError) as error:
+                reason = type(error).__name__
+            except GraphApiError as error:
+                if error.status not in {408, 429, 500, 502, 503, 504}:
+                    raise
+                reason = f"Graph {error.status}: {error.message}"
+            delay = _download_url_retry_delay(attempt)
+            logger.warning(
+                "获取下载直链失败：文件 %s，尝试 #%d，原因 %s；%d 秒后重试",
+                item_id,
+                attempt,
+                reason,
+                delay,
+            )
+            await asyncio.sleep(delay)
+            attempt += 1
 
     def _drive_url(self, drive_id: str) -> str:
         return f"{self._graph_base_url}/drives/{quote(drive_id, safe='')}"
@@ -202,24 +227,28 @@ class OneDriveClient:
         url: str,
         *,
         params: dict[str, str] | None = None,
+        timeout: aiohttp.ClientTimeout | None = None,
     ) -> dict[str, Any]:
         failed_account = self._account
         try:
-            return await self._get_json_once(url, params=params)
+            return await self._get_json_once(url, params=params, timeout=timeout)
         except GraphApiError as error:
             if error.status != 401 or error.code != "InvalidAuthenticationToken":
                 raise
         await self._refresh_after_auth_failure(failed_account)
-        return await self._get_json_once(url, params=params)
+        return await self._get_json_once(url, params=params, timeout=timeout)
 
     async def _get_json_once(
         self,
         url: str,
         *,
         params: dict[str, str] | None = None,
+        timeout: aiohttp.ClientTimeout | None = None,
     ) -> dict[str, Any]:
         async with self._request_limiter:
-            async with self._session.get(url, headers=self._headers, params=params) as response:
+            async with self._session.get(
+                url, headers=self._headers, params=params, timeout=timeout
+            ) as response:
                 return await _json_or_error(response)
 
     async def _refresh_after_auth_failure(self, failed_account: Account) -> None:
@@ -281,3 +310,9 @@ def _access_token_from_payload(payload: dict[str, Any]) -> AccessToken:
         expires_in=payload["expires_in"],
         refresh_token=payload.get("refresh_token"),
     )
+
+
+def _download_url_retry_delay(attempt: int) -> int:
+    if attempt >= 10:
+        return DOWNLOAD_URL_RETRY_MAX_SECONDS
+    return 2 ** (attempt - 1)
